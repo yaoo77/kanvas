@@ -31,6 +31,7 @@ declare global {
       showContextMenu: (items: Array<{ label: string; id: string }>) => Promise<string | null>
       selectFile: (path: string) => void
       openExternal: (url: string) => void
+      getDragPaths: () => Promise<string[]>
       // cmux internal events
       onCmuxSplit: (cb: (direction: string) => void) => () => void
       onCmuxNewPane: (cb: (paneType: string) => void) => () => void
@@ -613,11 +614,17 @@ function renderTileElement(tile: Tile): void {
       if (e.relatedTarget && dropOverlay.contains(e.relatedTarget as Node)) return
       dropOverlay.style.display = 'none'
     })
-    dropOverlay.addEventListener('drop', (e) => {
+    dropOverlay.addEventListener('drop', async (e) => {
       e.preventDefault()
       e.stopPropagation()
       dropOverlay.style.display = 'none'
-      const filePath = e.dataTransfer?.getData('text/plain')
+      // Try dataTransfer first, then fall back to stored drag paths
+      let filePath = e.dataTransfer?.getData('text/plain')
+      if (!filePath) {
+        // Get paths stored by nav webview via main process
+        const paths = await window.shellApi.getDragPaths()
+        if (paths && paths.length > 0) filePath = paths.join(' ')
+      }
       if (filePath) {
         const wv = webviews.get(tile.id)
         if (wv) (wv.webview as any).send('cmux:write-to-pty', filePath + ' ')
