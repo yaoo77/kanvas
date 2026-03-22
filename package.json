@@ -1,5 +1,5 @@
 {
-  "name": "kawase",
+  "name": "kanvas",
   "version": "0.1.0",
   "description": "Collaborator + cmux-tb integrated desktop app",
   "main": "./out/main/index.js",

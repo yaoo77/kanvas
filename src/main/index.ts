@@ -210,7 +210,7 @@ export function forwardToWebview(target: string, channel: string, ...args: unkno
 function buildAppMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     {
-      label: 'kawase',
+      label: 'kanvas',
       submenu: [
         { role: 'about' },
         { type: 'separator' },
