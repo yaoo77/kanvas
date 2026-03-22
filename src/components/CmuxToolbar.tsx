@@ -99,30 +99,6 @@ export default function CmuxToolbar({ sessionId, onNewTab, onSplit }: CmuxToolba
   const [flashId, setFlashId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Status polling
-  useEffect(() => {
-    let active = true
-    const poll = async () => {
-      try {
-        const result = await window.api.cmuxExec(['sidebar-state'])
-        if (!active || !result.ok) return
-        const output = result.output || ''
-        const statusMatch = output.match(/status:\s*(.+)/i)
-        if (statusMatch) setStatus(statusMatch[1].trim())
-        const progressMatch = output.match(/progress:\s*([\d.]+)/i)
-        if (progressMatch) {
-          setProgress(Math.round(parseFloat(progressMatch[1]) * 100))
-        } else {
-          setProgress(null)
-        }
-      } catch {
-        // cmux not available
-      }
-    }
-    poll()
-    const interval = setInterval(poll, 5000)
-    return () => { active = false; clearInterval(interval) }
-  }, [])
 
   // Focus input when modal opens
   useEffect(() => {
@@ -207,27 +183,6 @@ export default function CmuxToolbar({ sessionId, onNewTab, onSplit }: CmuxToolba
 
         {/* Spacer */}
         <div style={{ flex: 1 }} />
-
-        {/* Status */}
-        {status && (
-          <span style={{ fontSize: 11, color: '#666', marginRight: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}>
-            {status}
-          </span>
-        )}
-
-        {/* Fullscreen toggle */}
-        <button
-          title="Toggle Fullscreen"
-          onClick={() => window.api.cmuxExec(['fullscreen'])}
-          style={{
-            width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', borderRadius: 3,
-          }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ccc' }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#888' }}
-        >
-          <FullscreenIcon />
-        </button>
       </div>
 
       {/* Progress bar */}

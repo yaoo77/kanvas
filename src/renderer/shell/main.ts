@@ -675,15 +675,25 @@ function tileIcon(type: Tile['type']): string {
   }
 }
 
+let terminalCounter = 0
+let browserCounter = 0
+let noteCounter = 0
+const tileLabelMap = new Map<string, string>()
+
 function tileLabel(tile: Tile): string {
+  if (tileLabelMap.has(tile.id)) return tileLabelMap.get(tile.id)!
+  let label: string
   switch (tile.type) {
-    case 'terminal': return 'Terminal'
-    case 'graph':    return 'Graph'
-    case 'browser':  return tile.url || 'Browser'
-    case 'viewer':   return 'Viewer'
-    case 'file':     return tile.filePath?.split('/').pop() || 'File'
-    case 'note':     return 'Note'
+    case 'terminal': label = `Terminal ${++terminalCounter}`; break
+    case 'graph':    label = 'Graph'; break
+    case 'browser':  label = tile.url ? new URL(tile.url).hostname : `Browser ${++browserCounter}`; break
+    case 'viewer':   label = 'Viewer'; break
+    case 'file':     label = tile.filePath?.split('/').pop() || 'File'; break
+    case 'note':     label = `Note ${++noteCounter}`; break
+    default:         label = tile.type
   }
+  tileLabelMap.set(tile.id, label)
+  return label
 }
 
 // ─── Tile webview creation ───────────────────────────────────────────
