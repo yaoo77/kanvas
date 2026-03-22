@@ -301,6 +301,12 @@ app.whenReady().then(async () => {
     } catch (err: any) {
       const output = err.stdout?.trim() || ''
       const stderr = err.stderr?.trim() || ''
+      // git pull/push output fetch info to stderr even on success
+      // Check if it's a real error by looking for fatal/error keywords
+      const isRealError = (err.message || '').includes('fatal') || (err.message || '').includes('error:') || (err.message || '').includes('CONFLICT')
+      if (!isRealError && output) {
+        return { ok: true, output, stderr }
+      }
       return { ok: false, error: err.message, output, stderr }
     }
   })
