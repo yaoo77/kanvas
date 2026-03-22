@@ -621,14 +621,34 @@ function renderTileElement(tile: Tile): void {
       // Try dataTransfer first, then fall back to stored drag paths
       let filePath = e.dataTransfer?.getData('text/plain')
       if (!filePath) {
-        // Get paths stored by nav webview via main process
         const paths = await window.shellApi.getDragPaths()
         if (paths && paths.length > 0) filePath = paths.join(' ')
       }
+      console.log('[drop] filePath:', filePath)
       if (filePath) {
         const wv = webviews.get(tile.id)
         if (wv) (wv.webview as any).send('cmux:write-to-pty', filePath + ' ')
       }
+    })
+
+    // Also listen on content div directly as fallback
+    content.addEventListener('drop', async (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      dropOverlay.style.display = 'none'
+      let filePath = e.dataTransfer?.getData('text/plain')
+      if (!filePath) {
+        const paths = await window.shellApi.getDragPaths()
+        if (paths && paths.length > 0) filePath = paths.join(' ')
+      }
+      console.log('[content drop] filePath:', filePath)
+      if (filePath) {
+        const wv = webviews.get(tile.id)
+        if (wv) (wv.webview as any).send('cmux:write-to-pty', filePath + ' ')
+      }
+    })
+    content.addEventListener('dragover', (e) => {
+      e.preventDefault()
     })
 
     content.appendChild(dropOverlay)
