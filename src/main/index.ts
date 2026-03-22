@@ -156,6 +156,10 @@ function registerShellIpc(): void {
     forwardToShell('tiles:focus', tileId)
   })
 
+  ipcMain.on('shell:show-in-folder', (_e, filePath: string) => {
+    shell.showItemInFolder(filePath)
+  })
+
   ipcMain.on('shell:open-external', (_e, url: string) => {
     // Open URL in kawase browser tile instead of system browser
     forwardToShell('cmux:new-pane-with-url', url)

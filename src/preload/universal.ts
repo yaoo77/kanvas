@@ -159,8 +159,9 @@ contextBridge.exposeInMainWorld('api', {
   // Git operations
   gitExec: (args: string[]) => ipcRenderer.invoke('git:exec', args),
 
-  // Clipboard
-  copyToClipboard: (text: string) => { navigator.clipboard.writeText(text) }
+  // Clipboard & Finder
+  copyToClipboard: (text: string) => { navigator.clipboard.writeText(text) },
+  showInFolder: (path: string) => ipcRenderer.send('shell:show-in-folder', path)
 })
 
 // Prevent ctrl+wheel from zooming the webview

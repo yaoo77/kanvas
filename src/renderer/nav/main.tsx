@@ -26,6 +26,7 @@ declare global {
       renameFile: (old: string, newTitle: string) => Promise<{ ok: boolean; newPath?: string }>
       gitExec: (args: string[]) => Promise<{ ok: boolean; output?: string; error?: string; stderr?: string }>
       copyToClipboard: (text: string) => void
+      showInFolder: (path: string) => void
     }
   }
 }
@@ -106,12 +107,14 @@ function TreeNode({ entry, depth, onSelect, changedFiles }: TreeNodeProps) {
     e.preventDefault()
     const items = [
       { label: 'Open in Terminal', id: 'terminal' },
+      { label: 'Show in Finder', id: 'finder' },
       { label: 'Rename', id: 'rename' },
       { label: 'Copy Path', id: 'copy-path' },
       { label: 'Trash', id: 'trash' },
     ]
     const result = await window.api.showContextMenu(items)
     if (result === 'terminal') window.api.openInTerminal(entry.path)
+    else if (result === 'finder') window.api.showInFolder(entry.path)
     else if (result === 'trash') await window.api.trashFile(entry.path)
     else if (result === 'copy-path') window.api.copyToClipboard(entry.path)
     else if (result === 'rename') {
@@ -256,7 +259,7 @@ function SearchResults({ query, onSelect, changedFiles, workspacePath }: { query
   )
 }
 
-function FilesPanel({ entries, onSelect, searchQuery, changedFiles, workspacePath }: { entries: DirEntry[]; onSelect: (path: string, isDir: boolean) => void; searchQuery: string; changedFiles?: Set<string>; workspacePath: string | null }) {
+function FilesPanel({ entries, onSelect, searchQuery, changedFiles, workspacePath, onRefresh }: { entries: DirEntry[]; onSelect: (path: string, isDir: boolean) => void; searchQuery: string; changedFiles?: Set<string>; workspacePath: string | null; onRefresh?: () => void }) {
   const [creatingType, setCreatingType] = useState<'file' | 'folder' | null>(null)
   const [createName, setCreateName] = useState('')
 
@@ -271,7 +274,9 @@ function FilesPanel({ entries, onSelect, searchQuery, changedFiles, workspacePat
     }
     setCreatingType(null)
     setCreateName('')
-  }, [createName, creatingType, workspacePath])
+    // Refresh file tree
+    if (onRefresh) onRefresh()
+  }, [createName, creatingType, workspacePath, onRefresh])
 
   const smallBtnStyle: React.CSSProperties = {
     flex: 1, background: '#252525', border: '1px solid #444', color: '#ccc',
@@ -560,14 +565,29 @@ function GitPanel({ workspacePath }: { workspacePath: string | null }) {
 
   const handleCommit = useCallback(async () => {
     if (!commitMsg.trim()) { setOutput('Enter a commit message'); return }
-    // Stage all changes first
+    setLoading(true)
+    setOutput('')
+    // Stage → Commit → Push
     await window.api.gitExec(['add', '-A'])
-    await runGit(['commit', '-m', commitMsg.trim()], 'Committed: ' + commitMsg.trim())
+    const commitRes = await window.api.gitExec(['commit', '-m', commitMsg.trim()])
+    if (!commitRes.ok) {
+      setOutput('Commit error: ' + (commitRes.error || commitRes.stderr || ''))
+      setLoading(false)
+      return
+    }
+    // Auto push after commit
+    const pushRes = await window.api.gitExec(['push'])
+    if (pushRes.ok) {
+      setOutput('Committed & Pushed: ' + commitMsg.trim())
+    } else {
+      setOutput('Committed but push failed: ' + (pushRes.error || pushRes.stderr || ''))
+    }
     setCommitMsg('')
-  }, [commitMsg, runGit])
+    setLoading(false)
+    refresh()
+  }, [commitMsg, refresh])
 
-  const handlePush = useCallback(() => runGit(['push'], 'Pushed'), [runGit])
-  const handlePull = useCallback(() => runGit(['pull'], 'Pulled'), [runGit])
+  const handlePull = useCallback(() => runGit(['pull', '--no-rebase'], 'Pulled from remote'), [runGit])
 
   const actionBtnStyle: React.CSSProperties = {
     flex: 1, background: '#252525', border: '1px solid #444', color: '#ccc',
@@ -592,10 +612,6 @@ function GitPanel({ workspacePath }: { workspacePath: string | null }) {
           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525' }}
         >Pull</button>
-        <button style={actionBtnStyle} onClick={handlePush}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525' }}
-        >Push</button>
         <button style={actionBtnStyle} onClick={refresh}
           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525' }}
@@ -631,7 +647,7 @@ function GitPanel({ workspacePath }: { workspacePath: string | null }) {
           onMouseEnter={e => { if (commitMsg.trim()) (e.currentTarget as HTMLElement).style.background = '#3a7a28' }}
           onMouseLeave={e => { if (commitMsg.trim()) (e.currentTarget as HTMLElement).style.background = '#2d5a1e' }}
         >
-          {loading ? 'Working...' : 'Commit All'}
+          {loading ? 'Working...' : 'Commit & Push'}
         </button>
       </div>
 
@@ -789,7 +805,7 @@ function App() {
         </div>
       )}
       {tab === 'files' ? (
-        <FilesPanel entries={entries} onSelect={handleSelect} searchQuery={searchQuery} changedFiles={changedFiles} workspacePath={workspace} />
+        <FilesPanel entries={entries} onSelect={handleSelect} searchQuery={searchQuery} changedFiles={changedFiles} workspacePath={workspace} onRefresh={() => { if (workspace) loadRoot(workspace) }} />
       ) : tab === 'sessions' ? (
         <SessionsPanel />
       ) : (
