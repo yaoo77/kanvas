@@ -422,6 +422,18 @@ function SessionsPanel() {
           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525' }}
         >+ Note</button>
       </div>
+      <div style={{ padding: '0 12px 8px' }}>
+        <button
+          onClick={() => { window.api.cmuxExec(['fullscreen']); setTimeout(refresh, 300) }}
+          style={{
+            width: '100%', background: '#252525', border: '1px solid #444', color: '#ccc',
+            borderRadius: 4, padding: '6px 0', cursor: 'pointer', fontSize: 11, display: 'flex',
+            alignItems: 'center', justifyContent: 'center', gap: 4,
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#4a9eff'; (e.currentTarget as HTMLElement).style.color = '#fff' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525'; (e.currentTarget as HTMLElement).style.color = '#ccc' }}
+        >⛶ Fullscreen</button>
+      </div>
 
       {terminals.length > 0 && (
         <>
@@ -481,21 +493,6 @@ function SessionsPanel() {
         <div style={{ padding: 16, color: '#666', fontSize: 13 }}>No active sessions</div>
       )}
 
-      {/* Fullscreen toggle at bottom */}
-      <div style={{ padding: '8px 12px', borderTop: '1px solid #333', marginTop: 'auto', flexShrink: 0 }}>
-        <button
-          onClick={() => { window.api.cmuxExec(['fullscreen']); setTimeout(refresh, 300) }}
-          style={{
-            width: '100%', background: '#252525', border: '1px solid #444', color: '#ccc',
-            borderRadius: 4, padding: '8px 0', cursor: 'pointer', fontSize: 12, display: 'flex',
-            alignItems: 'center', justifyContent: 'center', gap: 6,
-          }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#4a9eff'; (e.currentTarget as HTMLElement).style.color = '#fff' }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525'; (e.currentTarget as HTMLElement).style.color = '#ccc' }}
-        >
-          ⛶ Toggle Fullscreen
-        </button>
-      </div>
     </div>
   )
 }
