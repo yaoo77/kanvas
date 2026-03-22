@@ -363,9 +363,16 @@ function App() {
   }, [])
 
   useEffect(() => {
-    window.api.getSelectedFile().then((path) => {
-      if (path) loadFile(path)
-    })
+    // Check URL param first (for tiles created with filePath)
+    const params = new URLSearchParams(window.location.search)
+    const fileFromUrl = params.get('file')
+    if (fileFromUrl) {
+      loadFile(fileFromUrl)
+    } else {
+      window.api.getSelectedFile().then((path) => {
+        if (path) loadFile(path)
+      })
+    }
 
     const unsub = window.api.onFileSelected((path) => {
       loadFile(path)
