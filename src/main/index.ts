@@ -284,6 +284,23 @@ app.whenReady().then(async () => {
   registerDialogHandlers()
   registerImageHandlers()
 
+  // Git operations
+  ipcMain.handle('git:exec', async (_e, args: string[]) => {
+    const { execFile } = require('child_process')
+    const { promisify } = require('util')
+    const execFileAsync = promisify(execFile)
+    const idx = config.active_workspace
+    const cwd = idx >= 0 && idx < config.workspaces.length ? config.workspaces[idx] : process.cwd()
+    try {
+      const { stdout, stderr } = await execFileAsync('git', args, { cwd, timeout: 30000 })
+      return { ok: true, output: stdout.trim(), stderr: stderr?.trim() || '' }
+    } catch (err: any) {
+      const output = err.stdout?.trim() || ''
+      const stderr = err.stderr?.trim() || ''
+      return { ok: false, error: err.message, output, stderr }
+    }
+  })
+
   // Build menu and create window
   buildAppMenu()
   createWindow()

@@ -154,7 +154,13 @@ contextBridge.exposeInMainWorld('api', {
 
   // cmux write-to-pty (from shell via webview message)
   onCmuxWrite: (cb: (text: string) => void) => { cmuxWriteListeners.add(cb) },
-  offCmuxWrite: (cb: (text: string) => void) => { cmuxWriteListeners.delete(cb) }
+  offCmuxWrite: (cb: (text: string) => void) => { cmuxWriteListeners.delete(cb) },
+
+  // Git operations
+  gitExec: (args: string[]) => ipcRenderer.invoke('git:exec', args),
+
+  // Clipboard
+  copyToClipboard: (text: string) => { navigator.clipboard.writeText(text) }
 })
 
 // Prevent ctrl+wheel from zooming the webview
