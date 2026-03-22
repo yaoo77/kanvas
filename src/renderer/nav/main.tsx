@@ -614,13 +614,18 @@ function GitPanel({ workspacePath }: { workspacePath: string | null }) {
   const handlePull = useCallback(async () => {
     setLoading(true)
     setOutput('')
-    // Try pull with explicit remote/branch
     const b = branch || 'main'
-    let res = await window.api.gitExec(['pull', 'origin', b, '--no-rebase'])
-    if (res.ok) {
-      setOutput('Pulled from origin/' + b)
+    // Stash local changes before pull
+    const stashRes = await window.api.gitExec(['stash', '--include-untracked'])
+    const didStash = stashRes.ok && !(stashRes.output || '').includes('No local changes')
+    // Pull
+    const pullRes = await window.api.gitExec(['pull', 'origin', b, '--no-rebase'])
+    // Pop stash if we stashed
+    if (didStash) await window.api.gitExec(['stash', 'pop'])
+    if (pullRes.ok) {
+      setOutput('Pulled from origin/' + b + (didStash ? ' (stash applied)' : ''))
     } else {
-      setOutput('Pull error: ' + (res.error || res.stderr || ''))
+      setOutput('Pull error: ' + (pullRes.error || pullRes.stderr || ''))
     }
     setLoading(false)
     refresh()
