@@ -108,22 +108,19 @@ function CommandInput({ onSend }: { onSend: (text: string) => void }) {
   )
 }
 
-/* ── Tab types ── */
+/* ── Recursive Split Tree ── */
 
-interface SplitState {
-  direction: 'horizontal' | 'vertical'
-  secondSessionId: string | null
-  secondStatus: 'connecting' | 'connected' | 'exited'
-  sizes: [number, number]  // percentage for each pane
-}
+type SplitTree =
+  | { type: 'terminal'; id: string; sessionId: string | null; status: 'connecting' | 'connected' | 'exited' }
+  | { type: 'split'; direction: 'horizontal' | 'vertical'; children: SplitTree[]; sizes: number[] }
+
+/* ── Tab types ── */
 
 interface TabInfo {
   id: string
-  sessionId: string | null
   title: string
-  status: 'connecting' | 'connected' | 'exited'
-  split: SplitState | null
-  focusedPane: 'primary' | 'secondary'  // which pane receives command input
+  tree: SplitTree
+  focusedTermId: string  // which terminal leaf in the tree receives commands
 }
 
 let tabCounter = 0
@@ -131,18 +128,133 @@ function createTabId(): string {
   return `tab-${++tabCounter}-${Date.now()}`
 }
 
-/* ── Per-tab terminal session ── */
-
-interface TerminalSessionProps {
-  tab: TabInfo
-  visible: boolean
-  cwd: string | undefined
-  onSessionReady: (tabId: string, sessionId: string) => void
-  onStatusChange: (tabId: string, status: TabInfo['status']) => void
-  onTitleChange: (tabId: string, title: string) => void
+let termCounter = 0
+function createTermId(): string {
+  return `term-${++termCounter}-${Date.now()}`
 }
 
-function TerminalSession({ tab, visible, cwd, onSessionReady, onStatusChange, onTitleChange }: TerminalSessionProps) {
+/* ── Tree helper functions ── */
+
+/** Collect all terminal IDs in a tree */
+function collectTermIds(tree: SplitTree): string[] {
+  if (tree.type === 'terminal') return [tree.id]
+  return tree.children.flatMap(collectTermIds)
+}
+
+/** Collect all session IDs in a tree (for cleanup) */
+function collectSessionIds(tree: SplitTree): string[] {
+  if (tree.type === 'terminal') return tree.sessionId ? [tree.sessionId] : []
+  return tree.children.flatMap(collectSessionIds)
+}
+
+/** Find a terminal node by its ID */
+function findTermNode(tree: SplitTree, termId: string): SplitTree | null {
+  if (tree.type === 'terminal') return tree.id === termId ? tree : null
+  for (const child of tree.children) {
+    const found = findTermNode(child, termId)
+    if (found) return found
+  }
+  return null
+}
+
+/** Check if any terminal in the tree has a given status */
+function hasStatus(tree: SplitTree, status: 'connecting' | 'connected' | 'exited'): boolean {
+  if (tree.type === 'terminal') return tree.status === status
+  return tree.children.some(c => hasStatus(c, status))
+}
+
+/** Count the number of split nodes (for tab indicator) */
+function countSplits(tree: SplitTree): number {
+  if (tree.type === 'terminal') return 0
+  return 1 + tree.children.reduce((sum, c) => sum + countSplits(c), 0)
+}
+
+/** Get the dominant split direction (for tab indicator) */
+function getDominantDirection(tree: SplitTree): 'vertical' | 'horizontal' | null {
+  if (tree.type === 'terminal') return null
+  return tree.direction
+}
+
+/** Replace a terminal node in the tree with a new subtree (immutable) */
+function replaceTermNode(tree: SplitTree, termId: string, replacement: SplitTree): SplitTree {
+  if (tree.type === 'terminal') {
+    return tree.id === termId ? replacement : tree
+  }
+  const newChildren = tree.children.map(c => replaceTermNode(c, termId, replacement))
+  // Check if anything changed
+  const changed = newChildren.some((c, i) => c !== tree.children[i])
+  return changed ? { ...tree, children: newChildren } : tree
+}
+
+/** Update a terminal node's properties (immutable) */
+function updateTermNode(
+  tree: SplitTree,
+  termId: string,
+  updater: (node: Extract<SplitTree, { type: 'terminal' }>) => SplitTree
+): SplitTree {
+  if (tree.type === 'terminal') {
+    return tree.id === termId ? updater(tree) : tree
+  }
+  const newChildren = tree.children.map(c => updateTermNode(c, termId, updater))
+  const changed = newChildren.some((c, i) => c !== tree.children[i])
+  return changed ? { ...tree, children: newChildren } : tree
+}
+
+/** Remove a terminal node from the tree, collapsing parent if needed (immutable).
+ *  Returns the new tree, or null if the tree becomes empty. */
+function removeTermNode(tree: SplitTree, termId: string): SplitTree | null {
+  if (tree.type === 'terminal') {
+    return tree.id === termId ? null : tree
+  }
+  const newChildren: SplitTree[] = []
+  for (const child of tree.children) {
+    const result = removeTermNode(child, termId)
+    if (result !== null) newChildren.push(result)
+  }
+  if (newChildren.length === 0) return null
+  if (newChildren.length === 1) return newChildren[0]
+  // Recalculate sizes proportionally
+  const oldIndices = newChildren.map((_, i) => {
+    // Find the index in the original children
+    return tree.children.indexOf(newChildren.length === tree.children.length ? tree.children[i] : tree.children.find(c => {
+      const result = removeTermNode(c, termId)
+      return result === newChildren[i]
+    })!)
+  })
+  // Simpler approach: distribute sizes evenly among remaining children
+  const totalSize = newChildren.length
+  const sizes = newChildren.map(() => 100 / totalSize)
+  return { ...tree, children: newChildren, sizes }
+}
+
+/** Update sizes for a specific split node that contains a child at a given path.
+ *  We identify the split by its position in the tree using a path of child indices. */
+function updateSplitSizes(tree: SplitTree, path: number[], sizes: number[]): SplitTree {
+  if (tree.type === 'terminal') return tree
+  if (path.length === 0) {
+    return { ...tree, sizes }
+  }
+  const [head, ...rest] = path
+  const newChildren = tree.children.map((c, i) =>
+    i === head ? updateSplitSizes(c, rest, sizes) : c
+  )
+  return { ...tree, children: newChildren }
+}
+
+/* ── Per-terminal session component ── */
+
+interface TerminalSessionProps {
+  termId: string
+  visible: boolean
+  focused: boolean
+  cwd: string | undefined
+  onSessionReady: (termId: string, sessionId: string) => void
+  onStatusChange: (termId: string, status: 'connecting' | 'connected' | 'exited') => void
+  onTitleChange: (termId: string, title: string) => void
+  onFocus: () => void
+}
+
+function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStatusChange, onTitleChange, onFocus }: TerminalSessionProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -174,7 +286,7 @@ function TerminalSession({ tab, visible, cwd, onSessionReady, onStatusChange, on
       const id = result.sessionId
       sessionId = id
       sessionIdRef.current = id
-      onSessionReady(tab.id, id)
+      onSessionReady(termId, id)
       window.api.notifyPtySessionId(id)
 
       // 2. Open terminal
@@ -206,7 +318,7 @@ function TerminalSession({ tab, visible, cwd, onSessionReady, onStatusChange, on
       const onExit = (payload: { sessionId: string; exitCode: number }) => {
         if (payload.sessionId === id && term) {
           term.write(`\r\n[Process exited with code ${payload.exitCode}]\r\n`)
-          onStatusChange(tab.id, 'exited')
+          onStatusChange(termId, 'exited')
         }
       }
       window.api.onPtyData(onData)
@@ -217,7 +329,7 @@ function TerminalSession({ tab, visible, cwd, onSessionReady, onStatusChange, on
       }
 
       window.api.ptyResize(id, term.cols, term.rows)
-      onStatusChange(tab.id, 'connected')
+      onStatusChange(termId, 'connected')
 
       inputDisposable = term.onData((data) => {
         window.api.ptyWrite(id, data)
@@ -228,7 +340,7 @@ function TerminalSession({ tab, visible, cwd, onSessionReady, onStatusChange, on
 
       // Track title changes from terminal escape sequences
       titleDisposable = term.onTitleChange((title) => {
-        if (title) onTitleChange(tab.id, title)
+        if (title) onTitleChange(termId, title)
       })
 
       resizeObserver = new ResizeObserver(() => {
@@ -251,7 +363,6 @@ function TerminalSession({ tab, visible, cwd, onSessionReady, onStatusChange, on
   // Re-fit when becoming visible
   useEffect(() => {
     if (visible && fitAddonRef.current) {
-      // Small delay to ensure container is measured
       requestAnimationFrame(() => {
         fitAddonRef.current?.fit()
       })
@@ -261,10 +372,13 @@ function TerminalSession({ tab, visible, cwd, onSessionReady, onStatusChange, on
   return (
     <div
       ref={containerRef}
+      onClick={onFocus}
       style={{
         flex: 1,
         minHeight: 0,
         display: visible ? 'block' : 'none',
+        outline: focused ? '1px solid #4a9eff55' : 'none',
+        outlineOffset: -1,
       }}
     />
   )
@@ -335,6 +449,107 @@ function SplitResizeHandle({
   )
 }
 
+/* ── Recursive SplitPane renderer ── */
+
+interface SplitPaneProps {
+  tree: SplitTree
+  visible: boolean
+  focusedTermId: string
+  cwd: string | undefined
+  onFocusTerm: (termId: string) => void
+  onSessionReady: (termId: string, sessionId: string) => void
+  onStatusChange: (termId: string, status: 'connecting' | 'connected' | 'exited') => void
+  onTitleChange: (termId: string, title: string) => void
+  onResize: (path: number[], sizes: number[]) => void
+  path: number[]  // path from root to this node for resize identification
+}
+
+function SplitPane({ tree, visible, focusedTermId, cwd, onFocusTerm, onSessionReady, onStatusChange, onTitleChange, onResize, path }: SplitPaneProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  if (tree.type === 'terminal') {
+    return (
+      <TerminalSession
+        termId={tree.id}
+        visible={visible}
+        focused={tree.id === focusedTermId}
+        cwd={cwd}
+        onSessionReady={onSessionReady}
+        onStatusChange={onStatusChange}
+        onTitleChange={onTitleChange}
+        onFocus={() => onFocusTerm(tree.id)}
+      />
+    )
+  }
+
+  // Split node: render children with resize handles between them
+  const isVert = tree.direction === 'vertical'
+  const handleSize = 4 // px for each resize handle
+  const totalHandles = tree.children.length - 1
+  const totalHandlePx = totalHandles * handleSize
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        display: 'flex',
+        flexDirection: isVert ? 'row' : 'column',
+        width: '100%',
+        height: '100%',
+        minHeight: 0,
+        minWidth: 0,
+      }}
+    >
+      {tree.children.map((child, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && (
+            <SplitResizeHandle
+              direction={tree.direction}
+              onResize={(delta) => {
+                const container = containerRef.current
+                if (!container) return
+                const containerSize = isVert ? container.clientWidth : container.clientHeight
+                if (containerSize === 0) return
+                const pctDelta = (delta / containerSize) * 100
+                const newSizes = [...tree.sizes]
+                const newPrev = Math.max(10, Math.min(90, newSizes[i - 1] + pctDelta))
+                const diff = newPrev - newSizes[i - 1]
+                newSizes[i - 1] = newPrev
+                newSizes[i] = Math.max(10, newSizes[i] - diff)
+                onResize(path, newSizes)
+              }}
+            />
+          )}
+          <div
+            style={{
+              [isVert ? 'width' : 'height']: `calc(${tree.sizes[i]}% - ${(totalHandlePx * tree.sizes[i]) / 100}px)`,
+              minHeight: 0,
+              minWidth: 0,
+              overflow: 'hidden',
+              position: 'relative',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            <SplitPane
+              tree={child}
+              visible={visible}
+              focusedTermId={focusedTermId}
+              cwd={cwd}
+              onFocusTerm={onFocusTerm}
+              onSessionReady={onSessionReady}
+              onStatusChange={onStatusChange}
+              onTitleChange={onTitleChange}
+              onResize={onResize}
+              path={[...path, i]}
+            />
+          </div>
+        </React.Fragment>
+      ))}
+    </div>
+  )
+}
+
 /* ── Main App ── */
 
 function App() {
@@ -342,6 +557,9 @@ function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const tabsRef = useRef<TabInfo[]>([])
   const cwdRef = useRef<string | undefined>(undefined)
+
+  // Map termId -> sessionId for PTY writes
+  const termSessionMap = useRef<Map<string, string>>(new Map())
 
   // Keep ref in sync
   useEffect(() => {
@@ -359,19 +577,14 @@ function App() {
     addTab()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // cmuxWrite forwards to the active tab's focused pane PTY
+  // cmuxWrite forwards to the active tab's focused terminal PTY
   useEffect(() => {
     const onCmuxWrite = (text: string) => {
       const active = tabsRef.current.find(t => t.id === activeTabId)
       if (!active) return
-      if (active.split && active.focusedPane === 'secondary') {
-        if (active.split.secondSessionId) {
-          window.api.ptyWrite(active.split.secondSessionId, text)
-        }
-      } else {
-        if (active.sessionId) {
-          window.api.ptyWrite(active.sessionId, text)
-        }
+      const sessionId = termSessionMap.current.get(active.focusedTermId)
+      if (sessionId) {
+        window.api.ptyWrite(sessionId, text)
       }
     }
     window.api.onCmuxWrite(onCmuxWrite)
@@ -390,25 +603,32 @@ function App() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const addTab = useCallback(() => {
-    const id = createTabId()
+    const tabId = createTabId()
+    const termId = createTermId()
     const tabNum = tabsRef.current.length + 1
     const newTab: TabInfo = {
-      id,
-      sessionId: null,
+      id: tabId,
       title: `Tab ${tabNum}`,
-      status: 'connecting',
-      split: null,
-      focusedPane: 'primary',
+      tree: { type: 'terminal', id: termId, sessionId: null, status: 'connecting' },
+      focusedTermId: termId,
     }
     setTabs(prev => [...prev, newTab])
-    setActiveTabId(id)
+    setActiveTabId(tabId)
   }, [])
 
   const closeTab = useCallback((tabId: string) => {
-    // Kill secondary split session if present
+    // Kill all sessions in the tab's tree
     const closing = tabsRef.current.find(t => t.id === tabId)
-    if (closing?.split?.secondSessionId) {
-      window.api.ptyKill(closing.split.secondSessionId)
+    if (closing) {
+      const sessionIds = collectSessionIds(closing.tree)
+      for (const sid of sessionIds) {
+        window.api.ptyKill(sid)
+      }
+      // Clean up termSessionMap
+      const termIds = collectTermIds(closing.tree)
+      for (const tid of termIds) {
+        termSessionMap.current.delete(tid)
+      }
     }
     setTabs(prev => {
       const idx = prev.findIndex(t => t.id === tabId)
@@ -421,109 +641,143 @@ function App() {
       }
       // If no tabs left, create a new one
       if (next.length === 0) {
-        // Defer to avoid state update conflict
         setTimeout(() => addTab(), 0)
       }
       return next
     })
   }, [activeTabId, addTab])
 
-  const handleSessionReady = useCallback((tabId: string, sessionId: string) => {
-    // Check if this is for a split secondary pane
-    if (tabId.endsWith('__split')) {
-      const realTabId = tabId.replace('__split', '')
-      setTabs(prev => prev.map(t =>
-        t.id === realTabId && t.split
-          ? { ...t, split: { ...t.split, secondSessionId: sessionId } }
-          : t
-      ))
-      return
-    }
-    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, sessionId } : t))
+  const handleSessionReady = useCallback((termId: string, sessionId: string) => {
+    termSessionMap.current.set(termId, sessionId)
+    setTabs(prev => prev.map(t => ({
+      ...t,
+      tree: updateTermNode(t.tree, termId, node => ({ ...node, sessionId })),
+    })))
     // Notify the first tab's session to main process
     if (tabsRef.current.length <= 1) {
       window.api.notifyPtySessionId(sessionId)
     }
   }, [])
 
-  const handleStatusChange = useCallback((tabId: string, status: TabInfo['status']) => {
-    // Check if this is for a split secondary pane
-    if (tabId.endsWith('__split')) {
-      const realTabId = tabId.replace('__split', '')
-      setTabs(prev => prev.map(t =>
-        t.id === realTabId && t.split
-          ? { ...t, split: { ...t.split, secondStatus: status } }
-          : t
-      ))
-      return
-    }
-    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, status } : t))
+  const handleStatusChange = useCallback((termId: string, status: 'connecting' | 'connected' | 'exited') => {
+    setTabs(prev => prev.map(t => ({
+      ...t,
+      tree: updateTermNode(t.tree, termId, node => ({ ...node, status })),
+    })))
   }, [])
 
-  const handleTitleChange = useCallback((tabId: string, title: string) => {
-    // Truncate to reasonable length for tab display
+  const handleTitleChange = useCallback((termId: string, title: string) => {
+    // Only update tab title if this terminal is the focused one in its tab
     const display = title.length > 20 ? title.slice(0, 20) + '...' : title
-    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, title: display } : t))
+    setTabs(prev => prev.map(t => {
+      if (t.focusedTermId === termId) {
+        return { ...t, title: display }
+      }
+      return t
+    }))
   }, [])
 
   const handleSendCommand = useCallback((text: string) => {
     const active = tabsRef.current.find(t => t.id === activeTabId)
     if (!active) return
-    // Send to the focused pane's session
-    if (active.split && active.focusedPane === 'secondary') {
-      if (active.split.secondSessionId) {
-        window.api.ptyWrite(active.split.secondSessionId, text)
-      }
-    } else {
-      if (active.sessionId) {
-        window.api.ptyWrite(active.sessionId, text)
-      }
+    const sessionId = termSessionMap.current.get(active.focusedTermId)
+    if (sessionId) {
+      window.api.ptyWrite(sessionId, text)
     }
   }, [activeTabId])
 
+  const handleFocusTerm = useCallback((tabId: string, termId: string) => {
+    setTabs(prev => prev.map(t =>
+      t.id === tabId ? { ...t, focusedTermId: termId } : t
+    ))
+  }, [])
+
   const handleSplit = useCallback((direction: 'horizontal' | 'vertical') => {
     const active = tabsRef.current.find(t => t.id === activeTabId)
-    if (!active || active.split) return  // Already split or no active tab
+    if (!active) return
 
-    // Create the split state - the secondary TerminalSession will create its own PTY
+    const focusedTermId = active.focusedTermId
+    const focusedNode = findTermNode(active.tree, focusedTermId)
+    if (!focusedNode || focusedNode.type !== 'terminal') return
+
+    // Create a new terminal to be the sibling
+    const newTermId = createTermId()
+    const newTermNode: SplitTree = {
+      type: 'terminal',
+      id: newTermId,
+      sessionId: null,
+      status: 'connecting',
+    }
+
+    // Replace the focused terminal with a split containing the original + new terminal
+    const splitNode: SplitTree = {
+      type: 'split',
+      direction,
+      children: [focusedNode, newTermNode],
+      sizes: [50, 50],
+    }
+
+    const newTree = replaceTermNode(active.tree, focusedTermId, splitNode)
+
     setTabs(prev => prev.map(t =>
-      t.id === activeTabId
-        ? {
-            ...t,
-            split: {
-              direction,
-              secondSessionId: null,
-              secondStatus: 'connecting' as const,
-              sizes: [50, 50] as [number, number],
-            },
-            focusedPane: 'primary' as const,
-          }
-        : t
+      t.id === activeTabId ? { ...t, tree: newTree } : t
     ))
   }, [activeTabId])
 
   const handleUnsplit = useCallback((tabId: string) => {
-    setTabs(prev => prev.map(t => {
-      if (t.id !== tabId || !t.split) return t
-      // Kill the secondary session
-      if (t.split.secondSessionId) {
-        window.api.ptyKill(t.split.secondSessionId)
-      }
-      return { ...t, split: null, focusedPane: 'primary' as const }
-    }))
-  }, [])
+    const tab = tabsRef.current.find(t => t.id === tabId)
+    if (!tab) return
 
-  const handleFocusPane = useCallback((tabId: string, pane: 'primary' | 'secondary') => {
+    // If the tree is just a single terminal, nothing to unsplit
+    if (tab.tree.type === 'terminal') return
+
+    // Collect all terminal IDs and session IDs, keep only the focused one
+    const allTermIds = collectTermIds(tab.tree)
+    const keepTermId = tab.focusedTermId
+    const keepNode = findTermNode(tab.tree, keepTermId) as Extract<SplitTree, { type: 'terminal' }> | null
+
+    if (!keepNode) return
+
+    // Kill all other sessions
+    for (const tid of allTermIds) {
+      if (tid !== keepTermId) {
+        const sid = termSessionMap.current.get(tid)
+        if (sid) window.api.ptyKill(sid)
+        termSessionMap.current.delete(tid)
+      }
+    }
+
+    // Replace entire tree with just the focused terminal
     setTabs(prev => prev.map(t =>
-      t.id === tabId ? { ...t, focusedPane: pane } : t
+      t.id === tabId ? { ...t, tree: keepNode, focusedTermId: keepTermId } : t
     ))
   }, [])
 
-  const handleSplitResize = useCallback((tabId: string, sizes: [number, number]) => {
+  /** Close only the focused pane (remove from tree, collapse if needed) */
+  const handleCloseFocusedPane = useCallback((tabId: string) => {
+    const tab = tabsRef.current.find(t => t.id === tabId)
+    if (!tab || tab.tree.type === 'terminal') return // Can't close the only terminal
+
+    const termId = tab.focusedTermId
+    const sid = termSessionMap.current.get(termId)
+    if (sid) window.api.ptyKill(sid)
+    termSessionMap.current.delete(termId)
+
+    const newTree = removeTermNode(tab.tree, termId)
+    if (!newTree) return // Should not happen since we checked it's not the only terminal
+
+    // Pick a new focused terminal from the remaining tree
+    const remainingTermIds = collectTermIds(newTree)
+    const newFocusedTermId = remainingTermIds[0] || tab.focusedTermId
+
     setTabs(prev => prev.map(t =>
-      t.id === tabId && t.split
-        ? { ...t, split: { ...t.split, sizes } }
-        : t
+      t.id === tabId ? { ...t, tree: newTree, focusedTermId: newFocusedTermId } : t
+    ))
+  }, [])
+
+  const handleTreeResize = useCallback((tabId: string, path: number[], sizes: number[]) => {
+    setTabs(prev => prev.map(t =>
+      t.id === tabId ? { ...t, tree: updateSplitSizes(t.tree, path, sizes) } : t
     ))
   }, [])
 
@@ -547,176 +801,138 @@ function App() {
           onPointerDown={e => e.stopPropagation()}
           onMouseDown={e => e.stopPropagation()}
         >
-          {tabs.map(tab => (
-            <div
-              key={tab.id}
-              onClick={() => setActiveTabId(tab.id)}
-              style={{
-                padding: '0 12px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                fontSize: 12,
-                color: tab.id === activeTabId ? '#e0e0e0' : '#888',
-                cursor: 'pointer',
-                borderBottom: tab.id === activeTabId ? '2px solid #4a9eff' : '2px solid transparent',
-                background: tab.id === activeTabId ? '#252525' : 'transparent',
-                whiteSpace: 'nowrap',
-                flexShrink: 0,
-              }}
-            >
-              {tab.split && (
-                <span style={{ fontSize: 9, color: '#4a9eff', marginRight: 2 }}>
-                  {tab.split.direction === 'vertical' ? '||' : '='}
-                </span>
-              )}
-              <span>{tab.title}</span>
-              {tab.status === 'exited' && (
-                <span style={{ fontSize: 9, color: '#f44', marginLeft: 2 }}>exited</span>
-              )}
-              {tab.split && tab.id === activeTabId && (
-                <span
-                  onClick={(e) => { e.stopPropagation(); handleUnsplit(tab.id) }}
-                  title="Close split"
-                  style={{
-                    marginLeft: 2,
-                    fontSize: 9,
-                    color: '#4a9eff88',
-                    cursor: 'pointer',
-                    lineHeight: 1,
-                    padding: '0 2px',
-                  }}
-                  onMouseEnter={e => { (e.target as HTMLElement).style.color = '#4a9eff' }}
-                  onMouseLeave={e => { (e.target as HTMLElement).style.color = '#4a9eff88' }}
-                >
-                  unsplit
-                </span>
-              )}
-              {tabs.length > 1 && (
-                <span
-                  onClick={(e) => { e.stopPropagation(); closeTab(tab.id) }}
-                  style={{
-                    marginLeft: 4,
-                    fontSize: 10,
-                    color: '#666',
-                    cursor: 'pointer',
-                    lineHeight: 1,
-                    padding: '0 2px',
-                    borderRadius: 2,
-                  }}
-                  onMouseEnter={e => { (e.target as HTMLElement).style.color = '#e0e0e0' }}
-                  onMouseLeave={e => { (e.target as HTMLElement).style.color = '#666' }}
-                >
-                  x
-                </span>
-              )}
-            </div>
-          ))}
+          {tabs.map(tab => {
+            const splitCount = countSplits(tab.tree)
+            const dominantDir = getDominantDirection(tab.tree)
+            const hasSplit = splitCount > 0
+            const termIds = collectTermIds(tab.tree)
+            const hasExited = hasStatus(tab.tree, 'exited')
+
+            return (
+              <div
+                key={tab.id}
+                onClick={() => setActiveTabId(tab.id)}
+                style={{
+                  padding: '0 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  fontSize: 12,
+                  color: tab.id === activeTabId ? '#e0e0e0' : '#888',
+                  cursor: 'pointer',
+                  borderBottom: tab.id === activeTabId ? '2px solid #4a9eff' : '2px solid transparent',
+                  background: tab.id === activeTabId ? '#252525' : 'transparent',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                }}
+              >
+                {hasSplit && (
+                  <span style={{ fontSize: 9, color: '#4a9eff', marginRight: 2 }}>
+                    {dominantDir === 'vertical' ? '||' : '='}{termIds.length > 2 ? `${termIds.length}` : ''}
+                  </span>
+                )}
+                <span>{tab.title}</span>
+                {hasExited && (
+                  <span style={{ fontSize: 9, color: '#f44', marginLeft: 2 }}>exited</span>
+                )}
+                {hasSplit && tab.id === activeTabId && (
+                  <>
+                    <span
+                      onClick={(e) => { e.stopPropagation(); handleCloseFocusedPane(tab.id) }}
+                      title="Close focused pane"
+                      style={{
+                        marginLeft: 2,
+                        fontSize: 9,
+                        color: '#4a9eff88',
+                        cursor: 'pointer',
+                        lineHeight: 1,
+                        padding: '0 2px',
+                      }}
+                      onMouseEnter={e => { (e.target as HTMLElement).style.color = '#4a9eff' }}
+                      onMouseLeave={e => { (e.target as HTMLElement).style.color = '#4a9eff88' }}
+                    >
+                      close pane
+                    </span>
+                    <span
+                      onClick={(e) => { e.stopPropagation(); handleUnsplit(tab.id) }}
+                      title="Close all splits (keep focused pane)"
+                      style={{
+                        marginLeft: 2,
+                        fontSize: 9,
+                        color: '#4a9eff88',
+                        cursor: 'pointer',
+                        lineHeight: 1,
+                        padding: '0 2px',
+                      }}
+                      onMouseEnter={e => { (e.target as HTMLElement).style.color = '#4a9eff' }}
+                      onMouseLeave={e => { (e.target as HTMLElement).style.color = '#4a9eff88' }}
+                    >
+                      unsplit
+                    </span>
+                  </>
+                )}
+                {tabs.length > 1 && (
+                  <span
+                    onClick={(e) => { e.stopPropagation(); closeTab(tab.id) }}
+                    style={{
+                      marginLeft: 4,
+                      fontSize: 10,
+                      color: '#666',
+                      cursor: 'pointer',
+                      lineHeight: 1,
+                      padding: '0 2px',
+                      borderRadius: 2,
+                    }}
+                    onMouseEnter={e => { (e.target as HTMLElement).style.color = '#e0e0e0' }}
+                    onMouseLeave={e => { (e.target as HTMLElement).style.color = '#666' }}
+                  >
+                    x
+                  </span>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
 
       {/* Terminal area */}
-      {activeTab?.status === 'connecting' && !activeTab.split && (
+      {activeTab?.tree.type === 'terminal' && activeTab.tree.status === 'connecting' && (
         <div style={{ padding: 8, fontSize: 12, color: '#888' }}>Connecting...</div>
       )}
 
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
         {tabs.map(tab => {
           const isActive = tab.id === activeTabId
-          const split = tab.split
-          const isVert = split?.direction === 'vertical'
 
           return (
             <div
               key={tab.id}
-              data-split-container={tab.id}
               style={{
                 flex: 1,
                 minHeight: 0,
                 minWidth: 0,
                 display: isActive ? 'flex' : 'none',
-                flexDirection: split ? (isVert ? 'row' : 'column') : 'column',
+                flexDirection: 'column',
               }}
             >
-              {/* Primary pane - always rendered with stable key */}
-              <div
-                onClick={split ? () => handleFocusPane(tab.id, 'primary') : undefined}
-                style={{
-                  ...(split
-                    ? {
-                        [isVert ? 'width' : 'height']: `calc(${split.sizes[0]}% - 2px)`,
-                        outline: tab.focusedPane === 'primary' ? '1px solid #4a9eff55' : 'none',
-                        outlineOffset: -1,
-                      }
-                    : {}),
-                  flex: split ? undefined : 1,
-                  minHeight: 0,
-                  minWidth: 0,
-                  display: 'flex',
-                  flexDirection: 'column',
-                }}
-              >
-                <TerminalSession
-                  tab={tab}
-                  visible={isActive}
-                  cwd={cwdRef.current}
-                  onSessionReady={handleSessionReady}
-                  onStatusChange={handleStatusChange}
-                  onTitleChange={handleTitleChange}
-                />
-              </div>
-
-              {/* Resize handle + secondary pane - only when split */}
-              {split && (
-                <>
-                  <SplitResizeHandle
-                    direction={split.direction}
-                    onResize={(delta) => {
-                      const container = document.querySelector(`[data-split-container="${tab.id}"]`) as HTMLElement | null
-                      if (!container) return
-                      const containerSize = isVert ? container.clientWidth : container.clientHeight
-                      if (containerSize === 0) return
-                      const pctDelta = (delta / containerSize) * 100
-                      const newFirst = Math.max(20, Math.min(80, split.sizes[0] + pctDelta))
-                      handleSplitResize(tab.id, [newFirst, 100 - newFirst])
-                    }}
-                  />
-                  <div
-                    onClick={() => handleFocusPane(tab.id, 'secondary')}
-                    style={{
-                      [isVert ? 'width' : 'height']: `calc(${split.sizes[1]}% - 2px)`,
-                      minHeight: 0,
-                      minWidth: 0,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      outline: tab.focusedPane === 'secondary' ? '1px solid #4a9eff55' : 'none',
-                      outlineOffset: -1,
-                    }}
-                  >
-                    <TerminalSession
-                      tab={{
-                        id: tab.id + '__split',
-                        sessionId: split.secondSessionId,
-                        title: '',
-                        status: split.secondStatus,
-                        split: null,
-                        focusedPane: 'primary',
-                      }}
-                      visible={true}
-                      cwd={cwdRef.current}
-                      onSessionReady={(_, sid) => handleSessionReady(tab.id + '__split', sid)}
-                      onStatusChange={(_, st) => handleStatusChange(tab.id + '__split', st)}
-                      onTitleChange={() => {}}
-                    />
-                  </div>
-                </>
-              )}
+              <SplitPane
+                tree={tab.tree}
+                visible={isActive}
+                focusedTermId={tab.focusedTermId}
+                cwd={cwdRef.current}
+                onFocusTerm={(termId) => handleFocusTerm(tab.id, termId)}
+                onSessionReady={handleSessionReady}
+                onStatusChange={handleStatusChange}
+                onTitleChange={handleTitleChange}
+                onResize={(path, sizes) => handleTreeResize(tab.id, path, sizes)}
+                path={[]}
+              />
             </div>
           )
         })}
       </div>
 
-      {(activeTab?.status === 'connected' || (activeTab?.split && (activeTab.status === 'connected' || activeTab.split.secondStatus === 'connected'))) && (
+      {activeTab && hasStatus(activeTab.tree, 'connected') && (
         <CommandInput onSend={handleSendCommand} />
       )}
     </div>
