@@ -406,8 +406,8 @@ function SessionsPanel() {
   }
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
-      {/* Action buttons */}
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '4px 0' }}>
+      {/* Create buttons */}
       <div style={{ padding: '8px 12px', display: 'flex', gap: 4 }}>
         <button style={actionBtnStyle} onClick={() => createTile('terminal')}
           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
@@ -421,10 +421,6 @@ function SessionsPanel() {
           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525' }}
         >+ Note</button>
-        <button style={{...actionBtnStyle, background: '#333'}} onClick={() => { window.api.cmuxExec(['fullscreen']); setTimeout(refresh, 300) }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#4a9eff' }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
-        >⛶</button>
       </div>
 
       {terminals.length > 0 && (
@@ -484,6 +480,22 @@ function SessionsPanel() {
       {tiles.length === 0 && (
         <div style={{ padding: 16, color: '#666', fontSize: 13 }}>No active sessions</div>
       )}
+
+      {/* Fullscreen toggle at bottom */}
+      <div style={{ padding: '8px 12px', borderTop: '1px solid #333', marginTop: 'auto', flexShrink: 0 }}>
+        <button
+          onClick={() => { window.api.cmuxExec(['fullscreen']); setTimeout(refresh, 300) }}
+          style={{
+            width: '100%', background: '#252525', border: '1px solid #444', color: '#ccc',
+            borderRadius: 4, padding: '8px 0', cursor: 'pointer', fontSize: 12, display: 'flex',
+            alignItems: 'center', justifyContent: 'center', gap: 6,
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#4a9eff'; (e.currentTarget as HTMLElement).style.color = '#fff' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525'; (e.currentTarget as HTMLElement).style.color = '#ccc' }}
+        >
+          ⛶ Toggle Fullscreen
+        </button>
+      </div>
     </div>
   )
 }
