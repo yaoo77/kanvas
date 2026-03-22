@@ -117,6 +117,10 @@ contextBridge.exposeInMainWorld('shellApi', {
     ipcRenderer.on('cmux:open-file', handler)
     return () => ipcRenderer.removeListener('cmux:open-file', handler)
   },
+  onCmuxFullscreen: (cb: () => void) => {
+    ipcRenderer.on('cmux:fullscreen', cb)
+    return () => ipcRenderer.removeListener('cmux:fullscreen', cb)
+  },
   onCmuxNewPaneWithUrl: (cb: (url: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, url: string) => cb(url)
     ipcRenderer.on('cmux:new-pane-with-url', handler)

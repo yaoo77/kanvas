@@ -38,6 +38,7 @@ declare global {
       onCmuxSendText: (cb: (text: string) => void) => () => void
       onCmuxOpenFile: (cb: (path: string) => void) => () => void
       onCmuxNewPaneWithUrl: (cb: (url: string) => void) => () => void
+      onCmuxFullscreen: (cb: () => void) => () => void
       onTilesListRequest: (cb: (channel: string) => void) => () => void
       sendTilesListResponse: (channel: string, tiles: unknown) => void
       onTilesFocus: (cb: (tileId: string) => void) => () => void
@@ -1217,7 +1218,14 @@ function setupCmuxHandlers(): void {
       x = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.terminal.w / 2
       y = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.terminal.h / 2
     }
-    createCanvasTile('terminal', snapToGrid(x), snapToGrid(y))
+    const newTile = createCanvasTile('terminal', snapToGrid(x), snapToGrid(y))
+    // Pan canvas to show new tile
+    const rect = panelViewer.getBoundingClientRect()
+    panX = rect.width / 2 - (newTile.x + newTile.width / 2) * zoom
+    panY = rect.height / 2 - (newTile.y + newTile.height / 2) * zoom
+    applyCanvasTransform()
+    drawGrid()
+    scheduleSave()
   })
 
   // New pane: create tile by type
@@ -1271,6 +1279,57 @@ function setupCmuxHandlers(): void {
     const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.browser.w / 2
     const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.browser.h / 2
     createCanvasTile('browser', snapToGrid(cx), snapToGrid(cy), { url })
+  })
+
+  // Fullscreen toggle: expand focused tile to fill canvas, or restore
+  let fullscreenState: { tileId: string; x: number; y: number; width: number; height: number; panX: number; panY: number; zoom: number } | null = null
+
+  window.shellApi.onCmuxFullscreen(() => {
+    if (fullscreenState) {
+      // Restore from fullscreen
+      const tile = tiles.find(t => t.id === fullscreenState!.tileId)
+      if (tile) {
+        tile.x = fullscreenState.x
+        tile.y = fullscreenState.y
+        tile.width = fullscreenState.width
+        tile.height = fullscreenState.height
+        const el = tileElements.get(tile.id)
+        if (el) applyTilePosition(el, tile)
+      }
+      panX = fullscreenState.panX
+      panY = fullscreenState.panY
+      zoom = fullscreenState.zoom
+      applyCanvasTransform()
+      drawGrid()
+      updateZoomIndicator()
+      // Show all tiles
+      for (const [, el] of tileElements) el.style.display = ''
+      fullscreenState = null
+    } else if (focusedTileId) {
+      // Enter fullscreen
+      const tile = tiles.find(t => t.id === focusedTileId)
+      if (!tile) return
+      fullscreenState = { tileId: tile.id, x: tile.x, y: tile.y, width: tile.width, height: tile.height, panX, panY, zoom }
+      // Hide all other tiles
+      for (const [id, el] of tileElements) {
+        if (id !== tile.id) el.style.display = 'none'
+      }
+      // Expand tile to fill canvas
+      const rect = panelViewer.getBoundingClientRect()
+      tile.x = 0
+      tile.y = 0
+      tile.width = rect.width - 20
+      tile.height = rect.height - 20
+      const el = tileElements.get(tile.id)
+      if (el) applyTilePosition(el, tile)
+      panX = 10
+      panY = 10
+      zoom = 1
+      applyCanvasTransform()
+      drawGrid()
+      updateZoomIndicator()
+    }
+    scheduleSave()
   })
 
   // Tile list for session panel in nav

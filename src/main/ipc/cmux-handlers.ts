@@ -104,6 +104,11 @@ export function registerCmuxHandlers(): void {
         return fail('Usage: markdown open <path>')
       }
 
+      case 'fullscreen': {
+        forwardToShell('cmux:fullscreen')
+        return success('Fullscreen toggled')
+      }
+
       case 'sidebar-state': {
         // Return internal state instead of calling external binary
         forwardToShell('cmux:get-state')

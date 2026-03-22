@@ -4,6 +4,7 @@ declare global {
   interface Window {
     api: {
       cmuxExec: (args: string[]) => Promise<{ ok: boolean; output?: string; error?: string }>
+      focusTile: (tileId: string) => void
     }
   }
 }
@@ -58,6 +59,13 @@ const TerminalIcon = () => (
     <rect x="1" y="2" width="14" height="12" rx="1.5" />
     <polyline points="4,6 7,8 4,10" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
     <line x1="8" y1="10" x2="12" y2="10" strokeLinecap="round" />
+  </svg>
+)
+
+const FullscreenIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+    <polyline points="2,6 2,2 6,2" /><polyline points="10,2 14,2 14,6" />
+    <polyline points="14,10 14,14 10,14" /><polyline points="6,14 2,14 2,10" />
   </svg>
 )
 
@@ -201,6 +209,20 @@ export default function CmuxToolbar({ sessionId }: CmuxToolbarProps) {
             {status}
           </span>
         )}
+
+        {/* Fullscreen toggle */}
+        <button
+          title="Toggle Fullscreen"
+          onClick={() => window.api.cmuxExec(['fullscreen'])}
+          style={{
+            width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', borderRadius: 3,
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#ccc' }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#888' }}
+        >
+          <FullscreenIcon />
+        </button>
       </div>
 
       {/* Progress bar */}
