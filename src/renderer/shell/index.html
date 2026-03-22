@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>kawase</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; background: #121212; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+    /* Titlebar */
+    #titlebar { -webkit-app-region: drag; height: 40px; background: #1a1a1a; display: flex; align-items: center; padding-left: 80px; font-size: 13px; color: #888; }
+
+    /* Panels layout */
+    #panels { display: flex; flex: 1; height: calc(100vh - 40px); }
+    #panel-nav { flex: 0 0 260px; background: #1e1e1e; border-right: 1px solid #333; overflow: hidden; display: flex; flex-direction: column; }
+    #nav-resize { width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0; }
+    #nav-resize:hover { background: #4a9eff; }
+    #panel-viewer { flex: 1; position: relative; overflow: hidden; }
+
+    /* Grid canvas */
+    #grid-canvas { position: absolute; inset: 0; z-index: 0; }
+
+    /* Tile layer */
+    #tile-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+
+    /* Canvas tiles */
+    .canvas-tile {
+      position: absolute; pointer-events: auto; display: flex; flex-direction: column;
+      border: 1px solid #333; border-radius: 6px; overflow: hidden; background: #1e1e1e;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .canvas-tile.focused { border-color: #4a9eff; box-shadow: 0 2px 12px rgba(74,158,255,0.2); }
+    .canvas-tile.selected { border-color: #4a9eff; }
+
+    /* Tile titlebar */
+    .tile-title-bar {
+      height: 28px; display: flex; align-items: center; padding: 0 6px; gap: 4px;
+      background: #252526; cursor: grab; user-select: none; flex-shrink: 0;
+    }
+    .tile-title-bar:active { cursor: grabbing; }
+    .tile-title-text { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tile-title-parent { color: #666; }
+    .tile-title-name { color: #ccc; }
+
+    /* Tile buttons */
+    .tile-btn {
+      width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+      background: transparent; border: none; color: #666; cursor: pointer; border-radius: 3px;
+    }
+    .tile-btn:hover { background: #333; color: #ccc; }
+    .tile-btn.close:hover { background: #c53030; color: #fff; }
+
+    /* Tile content */
+    .tile-content { flex: 1; position: relative; overflow: hidden; }
+    .tile-content webview { width: 100%; height: 100%; border: none; }
+    .tile-content-overlay {
+      position: absolute; inset: 0; z-index: 1; display: none;
+    }
+    .canvas-tile.dragging .tile-content-overlay,
+    .canvas-tile.resizing .tile-content-overlay { display: block; }
+
+    /* Resize handles */
+    .tile-resize { position: absolute; z-index: 2; }
+    .tile-resize-n { top: -3px; left: 6px; right: 6px; height: 6px; cursor: n-resize; }
+    .tile-resize-s { bottom: -3px; left: 6px; right: 6px; height: 6px; cursor: s-resize; }
+    .tile-resize-w { left: -3px; top: 6px; bottom: 6px; width: 6px; cursor: w-resize; }
+    .tile-resize-e { right: -3px; top: 6px; bottom: 6px; width: 6px; cursor: e-resize; }
+    .tile-resize-nw { top: -3px; left: -3px; width: 10px; height: 10px; cursor: nw-resize; }
+    .tile-resize-ne { top: -3px; right: -3px; width: 10px; height: 10px; cursor: ne-resize; }
+    .tile-resize-sw { bottom: -3px; left: -3px; width: 10px; height: 10px; cursor: sw-resize; }
+    .tile-resize-se { bottom: -3px; right: -3px; width: 10px; height: 10px; cursor: se-resize; }
+
+    /* Browser tile nav */
+    .tile-nav-group { display: flex; align-items: center; gap: 2px; margin-right: 4px; }
+    .tile-nav-btn { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; background: transparent; border: none; color: #888; cursor: pointer; border-radius: 3px; font-size: 11px; }
+    .tile-nav-btn:hover { background: #333; color: #ccc; }
+    .tile-url-input { flex: 1; background: #1e1e1e; border: 1px solid #444; color: #ccc; padding: 2px 6px; border-radius: 3px; font-size: 11px; outline: none; }
+    .tile-url-input:focus { border-color: #4a9eff; }
+
+    /* Zoom controls */
+    #zoom-controls {
+      position: absolute; bottom: 12px; right: 12px; z-index: 5;
+      display: flex; align-items: center; gap: 0;
+      background: rgba(30, 30, 30, 0.9); border: 1px solid #444; border-radius: 6px;
+      overflow: hidden; backdrop-filter: blur(8px);
+    }
+    #zoom-controls button {
+      background: none; border: none; color: #999; cursor: pointer;
+      font-size: 16px; width: 32px; height: 28px; display: flex;
+      align-items: center; justify-content: center; -webkit-app-region: no-drag;
+    }
+    #zoom-controls button:hover { background: #333; color: #fff; }
+    #zoom-controls button:active { background: #444; }
+    #zoom-reset { font-size: 12px; width: auto; padding: 0 8px; border-left: 1px solid #444; border-right: 1px solid #444; }
+    #zoom-indicator { font-size: 12px; color: #999; pointer-events: none; }
+
+    /* Nav toggle */
+    .panel-toggle { position: absolute; top: 12px; z-index: 10; background: #333; border: none; color: #888; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 13px; -webkit-app-region: no-drag; display: flex; align-items: center; justify-content: center; transition: left 0.1s; }
+    .panel-toggle:hover { background: #444; color: #ccc; }
+
+    /* Workspace dropdown */
+    #nav-toolbar { flex-shrink: 0; }
+    #workspace-dropdown-row { padding: 8px 12px; }
+    #workspace-trigger { background: none; border: 1px solid #444; color: #ccc; padding: 6px 10px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 6px; width: 100%; font-size: 13px; -webkit-app-region: no-drag; }
+    #workspace-trigger:hover { border-color: #666; }
+    #nav-webview-container { flex: 1; overflow: hidden; }
+
+    /* Settings overlay */
+    #settings-overlay { display: none; position: fixed; inset: 0; z-index: 100; }
+    #settings-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.5); }
+    #settings-modal { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 600px; max-height: 80vh; background: #1e1e1e; border-radius: 8px; overflow: auto; }
+
+    /* Loading */
+    #loading-overlay { position: fixed; inset: 0; background: #121212; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 999; transition: opacity 0.3s; }
+    #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+    #loading-spinner { width: 32px; height: 32px; border: 3px solid #333; border-top-color: #4a9eff; border-radius: 50%; animation: spin 1s linear infinite; }
+    #loading-status { margin-top: 12px; font-size: 13px; color: #888; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Marquee selection */
+    #marquee { position: absolute; border: 1px dashed #4a9eff; background: rgba(74,158,255,0.1); pointer-events: none; z-index: 3; display: none; }
+  </style>
+</head>
+<body>
+  <div id="titlebar">kawase</div>
+
+  <button type="button" id="nav-toggle" class="panel-toggle" aria-label="Toggle Navigator">◀</button>
+
+  <div id="panels">
+    <div id="panel-nav">
+      <div id="nav-toolbar">
+        <div id="workspace-dropdown-row">
+          <button type="button" id="workspace-trigger">
+            <span id="workspace-trigger-name">No workspace</span>
+          </button>
+        </div>
+      </div>
+      <div id="nav-webview-container"></div>
+    </div>
+    <div id="nav-resize"></div>
+    <div id="panel-viewer">
+      <canvas id="grid-canvas"></canvas>
+      <div id="tile-layer"></div>
+      <div id="marquee"></div>
+      <div id="zoom-controls">
+        <button id="zoom-out" title="Zoom Out">−</button>
+        <button id="zoom-reset" title="Reset Zoom"><span id="zoom-indicator">100%</span></button>
+        <button id="zoom-in" title="Zoom In">+</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="settings-overlay">
+    <div id="settings-backdrop"></div>
+    <div id="settings-modal"></div>
+  </div>
+
+  <div id="loading-overlay">
+    <div id="loading-spinner"></div>
+    <div id="loading-status">Initializing…</div>
+  </div>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

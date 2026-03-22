@@ -1,0 +1,42 @@
+{
+  "name": "kawase",
+  "version": "0.1.0",
+  "description": "Collaborator + cmux-tb integrated desktop app",
+  "main": "./out/main/index.js",
+  "author": "kawase",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "package": "electron-vite build && electron-builder",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@blocknote/core": "^0.47.2",
+    "@blocknote/mantine": "^0.47.2",
+    "@blocknote/react": "^0.47.2",
+    "@xterm/addon-fit": "0.11",
+    "@xterm/xterm": "6",
+    "front-matter": "^4.0.2",
+    "monaco-editor": "^0.55.1",
+    "node-pty": "^1.0.0",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@electron-toolkit/tsconfig": "^1.0.1",
+    "@types/node": "^22.0.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "electron-vite": "^2.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
+}
