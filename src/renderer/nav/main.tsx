@@ -21,6 +21,7 @@ declare global {
       listTiles: () => Promise<Array<{ id: string; type: string; sessionId?: string; filePath?: string; url?: string; focused: boolean }>>
       focusTile: (tileId: string) => void
       cmuxExec: (args: string[]) => Promise<{ ok: boolean; output?: string; error?: string }>
+      setDragPaths: (paths: string[]) => void
     }
   }
 }
@@ -100,6 +101,12 @@ function TreeNode({ entry, depth, onSelect, changedFiles }: TreeNodeProps) {
       <div
         onClick={toggle}
         onContextMenu={handleContextMenu}
+        draggable
+        onDragStart={(e) => {
+          e.dataTransfer.setData('text/plain', entry.path)
+          e.dataTransfer.setData('application/x-kawase-file', entry.path)
+          window.api.setDragPaths([entry.path])
+        }}
         style={{
           padding: '3px 8px',
           paddingLeft: `${depth * 16 + 8}px`,

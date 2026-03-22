@@ -590,6 +590,28 @@ function renderTileElement(tile: Tile): void {
     bringToFront(tile.id)
   })
 
+  // Drop file path into terminal
+  if (tile.type === 'terminal') {
+    content.addEventListener('dragover', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      content.style.outline = '2px solid #4a9eff'
+    })
+    content.addEventListener('dragleave', () => {
+      content.style.outline = ''
+    })
+    content.addEventListener('drop', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      content.style.outline = ''
+      const filePath = e.dataTransfer?.getData('text/plain')
+      if (filePath) {
+        const wv = webviews.get(tile.id)
+        if (wv) (wv.webview as any).send('cmux:write-to-pty', filePath + ' ')
+      }
+    })
+  }
+
   // URL bar for browser tiles
   if (tile.type === 'browser') {
     const urlBar = document.createElement('div')
