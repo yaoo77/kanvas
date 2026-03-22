@@ -1,112 +1,112 @@
 # kanvas
 
-A desktop workspace that combines an infinite canvas with terminal multiplexing. Built by merging [Collaborator](https://github.com/collaborator-ai/collab-public) and [cmux](https://github.com/alumican/cmux-tb) into a single Electron app.
+無限キャンバスとターミナルマルチプレクサを統合したデスクトップワークスペース。[Collaborator](https://github.com/collaborator-ai/collab-public) と [cmux](https://github.com/alumican/cmux-tb) を合成したElectronアプリ。
 
-## Features
+## 機能
 
-### Canvas
-- Infinite pan & zoom canvas with dot grid background
-- Draggable, resizable tiles with z-ordering
-- Fullscreen mode (all tiles go fullscreen, switch via Sessions panel)
-- Double-click canvas to create terminal, right-click for menu
+### キャンバス
+- 無限パン＆ズーム（ドットグリッド背景）
+- ドラッグ・リサイズ可能なタイル
+- 全画面モード（Sessionsパネルで切替）
+- ダブルクリックでターミナル作成、右クリックメニュー
+- Cmd+W でタイル閉じる
 
-### Terminal
-- Multiple terminal tabs within a single tile
-- Unlimited recursive pane splitting (vertical & horizontal)
-- Resize handles between panes
-- Send Command input bar at the bottom
-- Claude Code status line support
+### ターミナル
+- タイル内タブ（複数セッション管理）
+- 無制限ペイン分割（縦横再帰ネスト）
+- リサイズハンドル
+- Send Command入力バー（IME対応、Shift+Enter改行）
 
-### File Management
-- File tree with real-time sync (auto-updates on disk changes)
-- Search files (recursive, 3 levels deep)
-- Create files & folders from sidebar
-- Right-click: Show in Finder, Copy Path, Rename, Trash
-- Shift+click multi-select with bulk Copy Paths
-- File change indicators (blue dot)
+### ファイル管理
+- リアルタイム同期（ディスク変更を即反映）
+- 再帰検索（3階層）
+- ファイル・フォルダ作成ボタン
+- 右クリック：Finderで表示、パスコピー、リネーム、ゴミ箱
+- Shift+クリック複数選択＋パス一括コピー
+- 変更インジケーター（青ドット）
 
-### Viewer
-- Markdown: Preview/Edit toggle with Cmd+S save
-- HTML: Source/Preview toggle with live reload
-- PDF: Embedded viewer with zoom controls
-- Code: Monaco Editor with syntax highlighting
-- Image: Zoom controls
+### ビューア
+- Markdown：Preview/Edit切替、Cmd+S保存
+- HTML：Source/Preview切替、ライブリロード
+- PDF：埋め込みビューア＋ズーム
+- コード：Monaco Editorシンタックスハイライト
+- 画像：ズームコントロール
 
 ### Git
-- Branch display with remote URL management
-- Pull (auto stash + conflict resolution)
-- Commit & Push (auto pull before push)
-- Changed files list with color-coded status
-- git init for new repos, remote URL setup
+- ブランチ表示＋リモートURL管理
+- Pull（自動stash＋コンフリクト解決）
+- Commit & Push（自動pull→push、upstream自動設定）
+- 変更ファイル一覧（色分け）
+- git init、リモート設定
 
-### Sessions Panel
-- Create tiles: + Terminal, + Browser, + Note
-- Switch between tiles (auto-pans in canvas, switches in fullscreen)
-- Fullscreen toggle button
+### Sessionsパネル
+- タイル作成：+ Terminal / + Browser / + Note
+- タイル切替（キャンバスモード→自動パン、全画面モード→切替）
+- 全画面トグルボタン
 
-## Tech Stack
+## 技術スタック
 
-- **Electron 33** - Desktop shell
-- **React 19** - UI framework
-- **TypeScript** - Language
-- **@xterm/xterm 6** - Terminal emulation
-- **Monaco Editor** - Code editing
-- **electron-vite** - Build tooling
-- **bun** - Package manager
-- **node-pty** - PTY management
+- **Electron 33** — デスクトップシェル
+- **React 19** — UIフレームワーク
+- **TypeScript** — 言語
+- **@xterm/xterm 6** — ターミナルエミュレーション
+- **Monaco Editor** — コードエディタ
+- **electron-vite** — ビルドツール
+- **bun** — パッケージマネージャ
+- **node-pty** — PTY管理
 
-## Development
+## 開発
 
 ```bash
-# Install dependencies
+# 依存関係インストール
 bun install
 
-# Development mode (hot reload)
+# 開発モード（ホットリロード）
 bun run dev
 
-# Build
+# ビルド
 bun run build
 
-# Run built app
+# ビルド済みアプリ起動
 npx electron ./out/main/index.js
 
-# Package for distribution
+# 配布用パッケージ
 bun run package
 ```
 
-## Project Structure
+## プロジェクト構成
 
 ```
 src/
-  main/           # Electron main process
-    index.ts      # App lifecycle, window, IPC
-    config.ts     # ~/.kawase/config.json management
-    watcher.ts    # File system watcher
+  main/           # Electronメインプロセス
+    index.ts      # アプリライフサイクル、ウィンドウ、IPC
+    config.ts     # ~/.kawase/config.json 管理
+    watcher.ts    # ファイル監視
     ipc/
-      fs-handlers.ts        # File operations
-      pty-handlers.ts       # Terminal PTY management
-      cmux-handlers.ts      # Internal command routing
-      workspace-handlers.ts # Workspace management
-      dialog-handlers.ts    # Native dialogs
-      image-handlers.ts     # Image processing (sharp)
+      fs-handlers.ts        # ファイル操作
+      pty-handlers.ts       # ターミナルPTY管理
+      cmux-handlers.ts      # 内部コマンドルーティング
+      workspace-handlers.ts # ワークスペース管理
+      dialog-handlers.ts    # ネイティブダイアログ
+      image-handlers.ts     # 画像処理（sharp）
   preload/
-    shell.ts      # Shell window API bridge
-    universal.ts  # All webview API bridge
+    shell.ts      # シェルウィンドウAPIブリッジ
+    universal.ts  # 全webview APIブリッジ
   renderer/
-    shell/        # Canvas tile system (vanilla TS)
-    nav/          # File tree + Sessions + Git panels (React)
-    viewer/       # File viewer (React)
-    terminal/     # Sidebar terminal (React)
-    terminal-tile/# Canvas terminal with tabs & splits (React)
-    graph-tile/   # Knowledge graph (Canvas API)
-    settings/     # Settings panel (React)
+    shell/        # キャンバスタイルシステム（vanilla TS）
+    nav/          # ファイルツリー＋Sessions＋Gitパネル（React）
+    viewer/       # ファイルビューア（React）
+    terminal/     # サイドバーターミナル（React）
+    terminal-tile/# キャンバスターミナル（タブ＋分割対応、React）
+    graph-tile/   # ナレッジグラフ（Canvas API）
+    settings/     # 設定パネル（React）
   components/
-    CmuxToolbar.tsx  # Terminal toolbar
+    CmuxToolbar.tsx  # ターミナルツールバー
 packages/
-  shared/         # Shared types
-  cmux/           # Command definitions
+  shared/         # 共有型定義
+  cmux/           # コマンド定義
 ```
 
-## License
+## ライセンス
 
 MIT
