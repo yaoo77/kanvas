@@ -1106,6 +1106,31 @@ function setupCanvasInteractions(): void {
     createCanvasTile('terminal', snapToGrid(canvasX), snapToGrid(canvasY))
   })
 
+  // Drop files from navigator onto canvas → create file tiles
+  panelViewer.addEventListener('dragover', (e) => {
+    e.preventDefault()
+    e.dataTransfer!.dropEffect = 'copy'
+  })
+  panelViewer.addEventListener('drop', async (e) => {
+    e.preventDefault()
+    // Get paths from main process (set by nav webview on dragstart)
+    const paths = await window.shellApi.getDragPaths()
+    if (!paths || paths.length === 0) return
+    const rect = panelViewer.getBoundingClientRect()
+    const baseX = (e.clientX - rect.left - panX) / zoom
+    const baseY = (e.clientY - rect.top - panY) / zoom
+    for (let i = 0; i < paths.length; i++) {
+      const filePath = paths[i]
+      const ext = filePath.split('.').pop()?.toLowerCase() || ''
+      const offset = i * 30
+      if (['png','jpg','jpeg','gif','webp','svg','bmp','ico'].includes(ext)) {
+        createCanvasTile('file', snapToGrid(baseX + offset), snapToGrid(baseY + offset), { filePath })
+      } else {
+        createCanvasTile('file', snapToGrid(baseX + offset), snapToGrid(baseY + offset), { filePath })
+      }
+    }
+  })
+
   // Context menu on background
   panelViewer.addEventListener('contextmenu', async (e) => {
     const target = e.target as HTMLElement
