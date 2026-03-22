@@ -1276,86 +1276,92 @@ function setupCmuxHandlers(): void {
   })
 
   // Fullscreen toggle: expand focused tile to fill canvas, or restore
-  // Fullscreen mode: all tiles become full-canvas, switch via Sessions panel
+  // Fullscreen: only focused tile expands, others stay in place
   let isFullscreen = false
-  let savedTilePositions: Map<string, { x: number; y: number; width: number; height: number }> = new Map()
+  let fullscreenTileId: string | null = null
+  let savedFullscreenTile: { x: number; y: number; width: number; height: number } | null = null
   let savedViewport = { panX: 0, panY: 0, zoom: 1 }
 
-  function applyFullscreen(): void {
-    const rect = panelViewer.getBoundingClientRect()
-    const fw = rect.width - 10
-    const fh = rect.height - 10
+  function enterFullscreen(tileId: string): void {
+    const tile = tiles.find(t => t.id === tileId)
+    if (!tile) return
+    const el = tileElements.get(tileId)
+    if (!el) return
 
-    for (const tile of tiles) {
-      const el = tileElements.get(tile.id)
-      if (!el) continue
-      tile.x = 5
-      tile.y = 5
-      tile.width = fw
-      tile.height = fh
-      applyTilePosition(el, tile)
-      // Show only focused tile
-      el.style.display = tile.id === focusedTileId ? '' : 'none'
-    }
+    // Save state
+    savedFullscreenTile = { x: tile.x, y: tile.y, width: tile.width, height: tile.height }
+    savedViewport = { panX, panY, zoom }
+    fullscreenTileId = tileId
+
+    // Expand focused tile to fill canvas
+    const rect = panelViewer.getBoundingClientRect()
+    tile.x = 0
+    tile.y = 0
+    tile.width = rect.width / zoom
+    tile.height = rect.height / zoom
+    applyTilePosition(el, tile)
+    bringToFront(tileId)
+
+    // Pan to show fullscreen tile
     panX = 0
     panY = 0
     zoom = 1
     applyCanvasTransform()
     drawGrid()
     updateZoomIndicator()
+    isFullscreen = true
+  }
+
+  function exitFullscreen(): void {
+    if (!fullscreenTileId || !savedFullscreenTile) return
+    const tile = tiles.find(t => t.id === fullscreenTileId)
+    if (tile) {
+      tile.x = savedFullscreenTile.x
+      tile.y = savedFullscreenTile.y
+      tile.width = savedFullscreenTile.width
+      tile.height = savedFullscreenTile.height
+      const el = tileElements.get(fullscreenTileId)
+      if (el) applyTilePosition(el, tile)
+    }
+    panX = savedViewport.panX
+    panY = savedViewport.panY
+    zoom = savedViewport.zoom
+    applyCanvasTransform()
+    drawGrid()
+    updateZoomIndicator()
+    window.dispatchEvent(new Event('resize'))
+    isFullscreen = false
+    fullscreenTileId = null
+    savedFullscreenTile = null
   }
 
   window.shellApi.onCmuxFullscreen(() => {
     if (isFullscreen) {
-      // Exit fullscreen — restore positions
-      isFullscreen = false
-      for (const tile of tiles) {
-        const saved = savedTilePositions.get(tile.id)
-        if (saved) {
-          tile.x = saved.x
-          tile.y = saved.y
-          tile.width = saved.width
-          tile.height = saved.height
-        }
-        const el = tileElements.get(tile.id)
-        if (el) {
-          el.style.display = ''
-          applyTilePosition(el, tile)
-        }
-      }
-      panX = savedViewport.panX
-      panY = savedViewport.panY
-      zoom = savedViewport.zoom
-      applyCanvasTransform()
-      drawGrid()
-      updateZoomIndicator()
-      window.dispatchEvent(new Event('resize'))
-    } else {
-      // Enter fullscreen — save positions, expand all
-      isFullscreen = true
-      savedViewport = { panX, panY, zoom }
-      savedTilePositions.clear()
-      for (const tile of tiles) {
-        savedTilePositions.set(tile.id, { x: tile.x, y: tile.y, width: tile.width, height: tile.height })
-      }
-      applyFullscreen()
+      exitFullscreen()
+    } else if (focusedTileId) {
+      enterFullscreen(focusedTileId)
     }
     scheduleSave()
   })
 
-  // When focusing a tile in fullscreen, show only that tile
-  const origBringToFront = bringToFront
-  const patchedBringToFront = (id: string) => {
-    origBringToFront(id)
+  // Sessions panel tile focus
+  window.shellApi.onTilesFocus((tileId) => {
     if (isFullscreen) {
-      for (const [tid, el] of tileElements) {
-        el.style.display = tid === id ? '' : 'none'
+      // Switch fullscreen to this tile
+      exitFullscreen()
+      enterFullscreen(tileId)
+    } else {
+      bringToFront(tileId)
+      const tile = tiles.find(t => t.id === tileId)
+      if (tile) {
+        const rect = panelViewer.getBoundingClientRect()
+        panX = rect.width / 2 - (tile.x + tile.width / 2) * zoom
+        panY = rect.height / 2 - (tile.y + tile.height / 2) * zoom
+        applyCanvasTransform()
+        drawGrid()
+        scheduleSave()
       }
     }
-  }
-  // Patch tile focus in fullscreen via Sessions panel
-  window.shellApi.onTilesFocus((tileId) => {
-    patchedBringToFront(tileId)
     if (!isFullscreen) {
       const tile = tiles.find(t => t.id === tileId)
       if (tile) {
