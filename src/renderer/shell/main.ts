@@ -1040,6 +1040,11 @@ function setupCanvasInteractions(): void {
       spaceHeld = true
       if (!isPanning) panelViewer.style.cursor = 'grab'
     }
+    // Cmd+W to close focused tile
+    if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
+      e.preventDefault()
+      if (focusedTileId) removeTile(focusedTileId)
+    }
   })
 
   document.addEventListener('keyup', (e) => {
