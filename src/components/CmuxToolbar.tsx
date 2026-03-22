@@ -12,6 +12,7 @@ declare global {
 interface CmuxToolbarProps {
   sessionId?: string
   onNewTab?: () => void
+  onSplit?: (direction: 'horizontal' | 'vertical') => void
 }
 
 /* ── SVG Icons (14×14, stroke-based) ── */
@@ -77,7 +78,7 @@ interface ToolbarButton {
   title: string
   icon: React.ReactNode
   action: string[]
-  needsInput?: 'markdown' | 'command'
+  needsInput?: 'markdown'
 }
 
 const BUTTONS: ToolbarButton[][] = [
@@ -91,17 +92,14 @@ const BUTTONS: ToolbarButton[][] = [
     { id: 'new-tab', title: 'New Tab', icon: <PlusIcon />, action: ['new-tab'] },
     { id: 'new-browser', title: 'Open Browser', icon: <GlobeIcon />, action: ['new-pane', '--type', 'browser'] },
   ],
-  [
-    { id: 'cmd-palette', title: 'Send Command', icon: <TerminalIcon />, action: [], needsInput: 'command' },
-  ],
 ]
 
 /* ── Component ── */
 
-export default function CmuxToolbar({ sessionId, onNewTab }: CmuxToolbarProps) {
+export default function CmuxToolbar({ sessionId, onNewTab, onSplit }: CmuxToolbarProps) {
   const [status, setStatus] = useState('')
   const [progress, setProgress] = useState<number | null>(null)
-  const [modal, setModal] = useState<{ type: 'markdown' | 'command'; value: string } | null>(null)
+  const [modal, setModal] = useState<{ type: 'markdown'; value: string } | null>(null)
   const [flashId, setFlashId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -151,19 +149,23 @@ export default function CmuxToolbar({ sessionId, onNewTab }: CmuxToolbarProps) {
       onNewTab()
       return
     }
+    // Intercept split buttons: call onSplit prop instead of cmuxExec
+    if (btn.id.startsWith('split-') && onSplit) {
+      setFlashId(btn.id)
+      setTimeout(() => setFlashId(null), 120)
+      const direction = (btn.id === 'split-left' || btn.id === 'split-right') ? 'vertical' : 'horizontal'
+      onSplit(direction)
+      return
+    }
     // Visual feedback
     setFlashId(btn.id)
     setTimeout(() => setFlashId(null), 120)
     exec(btn.action)
-  }, [exec, onNewTab])
+  }, [exec, onNewTab, onSplit])
 
   const handleModalSubmit = useCallback(() => {
     if (!modal || !modal.value.trim()) { setModal(null); return }
-    if (modal.type === 'markdown') {
-      exec(['markdown', 'open', modal.value.trim()])
-    } else {
-      exec(['send', modal.value.trim()]).then(() => exec(['send-key', 'Return']))
-    }
+    exec(['markdown', 'open', modal.value.trim()])
     setModal(null)
   }, [modal, exec])
 
@@ -251,7 +253,7 @@ export default function CmuxToolbar({ sessionId, onNewTab }: CmuxToolbarProps) {
           onClick={stopPropagation}
         >
           <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>
-            {modal.type === 'markdown' ? 'Markdown file path:' : 'Command to send:'}
+            Markdown file path:
           </div>
           <input
             ref={inputRef}

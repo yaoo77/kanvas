@@ -57,11 +57,24 @@ function getMonacoLanguage(path: string): string {
 function MarkdownEditor({ content, filePath }: { content: string; filePath: string }) {
   const pathRef = useRef(filePath)
   pathRef.current = filePath
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(content)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Sync draft when file content changes externally (and not editing)
+  useEffect(() => {
+    if (!editing) setDraft(content)
+  }, [content, editing])
+
+  // Focus textarea when entering edit mode
+  useEffect(() => {
+    if (editing) textareaRef.current?.focus()
+  }, [editing])
 
   // Save handler (Cmd+S)
   const save = useCallback(async () => {
-    await window.api.writeFile(pathRef.current, content)
-  }, [content])
+    await window.api.writeFile(pathRef.current, draft)
+  }, [draft])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -74,7 +87,59 @@ function MarkdownEditor({ content, filePath }: { content: string; filePath: stri
     return () => window.removeEventListener('keydown', handler)
   }, [save])
 
-  return <FallbackMarkdown content={content} />
+  const btnStyle = (active: boolean): React.CSSProperties => ({
+    background: active ? '#555' : '#333',
+    color: active ? '#fff' : '#888',
+    border: 'none',
+    borderRadius: 4,
+    padding: '2px 10px',
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: active ? 600 : 400,
+  })
+
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '4px 12px', display: 'flex', gap: 4, alignItems: 'center', borderBottom: '1px solid #333', background: '#1a1a1a', flexShrink: 0 }}>
+        <button onClick={() => setEditing(false)} style={btnStyle(!editing)}>Preview</button>
+        <button onClick={() => setEditing(true)} style={btnStyle(editing)}>Edit</button>
+        {editing && (
+          <button
+            onClick={save}
+            style={{ ...btnStyle(false), marginLeft: 8, color: '#4a9eff' }}
+          >
+            Save
+          </button>
+        )}
+        <span style={{ fontSize: 11, color: '#666', marginLeft: 'auto' }}>
+          {filePath.split('/').pop()}
+        </span>
+      </div>
+      {editing ? (
+        <textarea
+          ref={textareaRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          spellCheck={false}
+          style={{
+            flex: 1,
+            background: '#1e1e1e',
+            color: '#e0e0e0',
+            border: 'none',
+            padding: 16,
+            fontSize: 13,
+            fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+            lineHeight: 1.6,
+            resize: 'none',
+            outline: 'none',
+            overflow: 'auto',
+          }}
+        />
+      ) : (
+        <FallbackMarkdown content={draft} />
+      )}
+    </div>
+  )
 }
 
 /* ── Markdown renderer ── */

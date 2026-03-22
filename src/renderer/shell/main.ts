@@ -1276,58 +1276,97 @@ function setupCmuxHandlers(): void {
   })
 
   // Fullscreen toggle: expand focused tile to fill canvas, or restore
-  let fullscreenState: { tileId: string; x: number; y: number; width: number; height: number; panX: number; panY: number; zoom: number } | null = null
+  // Fullscreen mode: all tiles become full-canvas, switch via Sessions panel
+  let isFullscreen = false
+  let savedTilePositions: Map<string, { x: number; y: number; width: number; height: number }> = new Map()
+  let savedViewport = { panX: 0, panY: 0, zoom: 1 }
+
+  function applyFullscreen(): void {
+    const rect = panelViewer.getBoundingClientRect()
+    const fw = rect.width - 10
+    const fh = rect.height - 10
+
+    for (const tile of tiles) {
+      const el = tileElements.get(tile.id)
+      if (!el) continue
+      tile.x = 5
+      tile.y = 5
+      tile.width = fw
+      tile.height = fh
+      applyTilePosition(el, tile)
+      // Show only focused tile
+      el.style.display = tile.id === focusedTileId ? '' : 'none'
+    }
+    panX = 0
+    panY = 0
+    zoom = 1
+    applyCanvasTransform()
+    drawGrid()
+    updateZoomIndicator()
+  }
 
   window.shellApi.onCmuxFullscreen(() => {
-    if (fullscreenState) {
-      // Restore from fullscreen
-      const tile = tiles.find(t => t.id === fullscreenState!.tileId)
-      if (tile) {
-        tile.x = fullscreenState.x
-        tile.y = fullscreenState.y
-        tile.width = fullscreenState.width
-        tile.height = fullscreenState.height
+    if (isFullscreen) {
+      // Exit fullscreen — restore positions
+      isFullscreen = false
+      for (const tile of tiles) {
+        const saved = savedTilePositions.get(tile.id)
+        if (saved) {
+          tile.x = saved.x
+          tile.y = saved.y
+          tile.width = saved.width
+          tile.height = saved.height
+        }
         const el = tileElements.get(tile.id)
-        if (el) applyTilePosition(el, tile)
+        if (el) {
+          el.style.display = ''
+          applyTilePosition(el, tile)
+        }
       }
-      panX = fullscreenState.panX
-      panY = fullscreenState.panY
-      zoom = fullscreenState.zoom
+      panX = savedViewport.panX
+      panY = savedViewport.panY
+      zoom = savedViewport.zoom
       applyCanvasTransform()
       drawGrid()
       updateZoomIndicator()
-      // Show all tiles and trigger resize for webviews
-      for (const [, el] of tileElements) {
-        el.style.display = ''
-      }
-      // Trigger resize so webviews recalculate
       window.dispatchEvent(new Event('resize'))
-      fullscreenState = null
-    } else if (focusedTileId) {
-      // Enter fullscreen
-      const tile = tiles.find(t => t.id === focusedTileId)
-      if (!tile) return
-      fullscreenState = { tileId: tile.id, x: tile.x, y: tile.y, width: tile.width, height: tile.height, panX, panY, zoom }
-      // Hide all other tiles
-      for (const [id, el] of tileElements) {
-        if (id !== tile.id) el.style.display = 'none'
+    } else {
+      // Enter fullscreen — save positions, expand all
+      isFullscreen = true
+      savedViewport = { panX, panY, zoom }
+      savedTilePositions.clear()
+      for (const tile of tiles) {
+        savedTilePositions.set(tile.id, { x: tile.x, y: tile.y, width: tile.width, height: tile.height })
       }
-      // Expand tile to fill canvas
-      const rect = panelViewer.getBoundingClientRect()
-      tile.x = 0
-      tile.y = 0
-      tile.width = rect.width - 20
-      tile.height = rect.height - 20
-      const el = tileElements.get(tile.id)
-      if (el) applyTilePosition(el, tile)
-      panX = 10
-      panY = 10
-      zoom = 1
-      applyCanvasTransform()
-      drawGrid()
-      updateZoomIndicator()
+      applyFullscreen()
     }
     scheduleSave()
+  })
+
+  // When focusing a tile in fullscreen, show only that tile
+  const origBringToFront = bringToFront
+  const patchedBringToFront = (id: string) => {
+    origBringToFront(id)
+    if (isFullscreen) {
+      for (const [tid, el] of tileElements) {
+        el.style.display = tid === id ? '' : 'none'
+      }
+    }
+  }
+  // Patch tile focus in fullscreen via Sessions panel
+  window.shellApi.onTilesFocus((tileId) => {
+    patchedBringToFront(tileId)
+    if (!isFullscreen) {
+      const tile = tiles.find(t => t.id === tileId)
+      if (tile) {
+        const rect = panelViewer.getBoundingClientRect()
+        panX = rect.width / 2 - (tile.x + tile.width / 2) * zoom
+        panY = rect.height / 2 - (tile.y + tile.height / 2) * zoom
+        applyCanvasTransform()
+        drawGrid()
+        scheduleSave()
+      }
+    }
   })
 
   // Tile list for session panel in nav
@@ -1343,20 +1382,6 @@ function setupCmuxHandlers(): void {
     window.shellApi.sendTilesListResponse(channel, tileList)
   })
 
-  // Focus tile by ID from session panel
-  window.shellApi.onTilesFocus((tileId) => {
-    bringToFront(tileId)
-    // Pan to center the tile
-    const tile = tiles.find(t => t.id === tileId)
-    if (tile) {
-      const rect = panelViewer.getBoundingClientRect()
-      panX = rect.width / 2 - (tile.x + tile.width / 2) * zoom
-      panY = rect.height / 2 - (tile.y + tile.height / 2) * zoom
-      applyCanvasTransform()
-      drawGrid()
-      scheduleSave()
-    }
-  })
 }
 
 // ─── Boot ────────────────────────────────────────────────────────────

@@ -123,17 +123,51 @@ function TreeNode({ entry, depth, onSelect, changedFiles }: TreeNodeProps) {
   )
 }
 
-function flattenEntries(entries: DirEntry[]): DirEntry[] {
-  const result: DirEntry[] = []
-  for (const entry of entries) {
-    result.push(entry)
+async function recursiveScan(dirPath: string, query: string, maxDepth: number, depth: number = 0): Promise<DirEntry[]> {
+  if (depth > maxDepth) return []
+  let entries: DirEntry[]
+  try {
+    entries = await window.api.readDir(dirPath)
+  } catch {
+    return []
   }
-  return result
+  const lowerQuery = query.toLowerCase()
+  const results: DirEntry[] = []
+  for (const entry of entries) {
+    if (entry.name.toLowerCase().includes(lowerQuery)) {
+      results.push(entry)
+    }
+    if (entry.isDir) {
+      const subResults = await recursiveScan(entry.path, query, maxDepth, depth + 1)
+      results.push(...subResults)
+    }
+  }
+  return results
 }
 
-function SearchResults({ entries, query, onSelect, changedFiles }: { entries: DirEntry[]; query: string; onSelect: (path: string, isDir: boolean) => void; changedFiles?: Set<string> }) {
-  const lowerQuery = query.toLowerCase()
-  const matches = flattenEntries(entries).filter(e => e.name.toLowerCase().includes(lowerQuery))
+function SearchResults({ query, onSelect, changedFiles, workspacePath }: { query: string; onSelect: (path: string, isDir: boolean) => void; changedFiles?: Set<string>; workspacePath: string | null }) {
+  const [matches, setMatches] = useState<DirEntry[]>([])
+  const [searching, setSearching] = useState(false)
+
+  useEffect(() => {
+    if (!query || !workspacePath) {
+      setMatches([])
+      return
+    }
+    let cancelled = false
+    setSearching(true)
+    recursiveScan(workspacePath, query, 3).then((results) => {
+      if (!cancelled) {
+        setMatches(results)
+        setSearching(false)
+      }
+    })
+    return () => { cancelled = true }
+  }, [query, workspacePath])
+
+  if (searching) {
+    return <div style={{ padding: 16, color: '#888', fontSize: 13 }}>Searching...</div>
+  }
 
   if (matches.length === 0) {
     return <div style={{ padding: 16, color: '#666', fontSize: 13 }}>No results for &ldquo;{query}&rdquo;</div>
@@ -159,6 +193,7 @@ function SearchResults({ entries, query, onSelect, changedFiles }: { entries: Di
         >
           <span style={{ width: 14, display: 'inline-block', color: '#888' }}>{entry.isDir ? '\u25B8' : ' '}</span>
           {entry.name}
+          <span style={{ color: '#555', fontSize: 11, marginLeft: 8 }}>{entry.path.replace(workspacePath + '/', '')}</span>
           {changedFiles?.has(entry.path) && <span style={{ color: '#4a9eff', fontSize: 10, marginLeft: 4 }}>{'\u25CF'}</span>}
         </div>
       ))}
@@ -166,11 +201,11 @@ function SearchResults({ entries, query, onSelect, changedFiles }: { entries: Di
   )
 }
 
-function FilesPanel({ entries, onSelect, searchQuery, changedFiles }: { entries: DirEntry[]; onSelect: (path: string, isDir: boolean) => void; searchQuery: string; changedFiles?: Set<string> }) {
+function FilesPanel({ entries, onSelect, searchQuery, changedFiles, workspacePath }: { entries: DirEntry[]; onSelect: (path: string, isDir: boolean) => void; searchQuery: string; changedFiles?: Set<string>; workspacePath: string | null }) {
   if (searchQuery) {
     return (
       <div style={{ flex: 1, overflow: 'auto' }}>
-        <SearchResults entries={entries} query={searchQuery} onSelect={onSelect} changedFiles={changedFiles} />
+        <SearchResults query={searchQuery} onSelect={onSelect} changedFiles={changedFiles} workspacePath={workspacePath} />
       </div>
     )
   }
@@ -420,7 +455,7 @@ function App() {
         </div>
       )}
       {tab === 'files' ? (
-        <FilesPanel entries={entries} onSelect={handleSelect} searchQuery={searchQuery} changedFiles={changedFiles} />
+        <FilesPanel entries={entries} onSelect={handleSelect} searchQuery={searchQuery} changedFiles={changedFiles} workspacePath={workspace} />
       ) : (
         <SessionsPanel />
       )}
