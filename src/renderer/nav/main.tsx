@@ -62,11 +62,12 @@ function TabBar({ active, onChange }: { active: NavTab; onChange: (tab: NavTab) 
 interface TreeNodeProps {
   entry: DirEntry
   depth: number
-  onSelect: (path: string, isDir: boolean) => void
+  onSelect: (path: string, isDir: boolean, shiftKey?: boolean) => void
   changedFiles?: Set<string>
+  selectedPaths?: Set<string>
 }
 
-function TreeNode({ entry, depth, onSelect, changedFiles }: TreeNodeProps) {
+function TreeNode({ entry, depth, onSelect, changedFiles, selectedPaths }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(false)
   const [children, setChildren] = useState<DirEntry[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -128,13 +129,22 @@ function TreeNode({ entry, depth, onSelect, changedFiles }: TreeNodeProps) {
   return (
     <div>
       <div
-        onClick={renaming ? undefined : toggle}
+        onClick={renaming ? undefined : (e) => {
+          if (e.shiftKey) {
+            onSelect(entry.path, entry.isDir, true)
+          } else {
+            toggle()
+          }
+        }}
         onContextMenu={handleContextMenu}
         draggable={!renaming}
         onDragStart={(e) => {
-          e.dataTransfer.setData('text/plain', entry.path)
-          e.dataTransfer.setData('application/x-kawase-file', entry.path)
-          window.api.setDragPaths([entry.path])
+          // If this file is in selection, drag all selected paths
+          const paths = selectedPaths?.size && selectedPaths.has(entry.path)
+            ? Array.from(selectedPaths) : [entry.path]
+          e.dataTransfer.setData('text/plain', paths.join(' '))
+          e.dataTransfer.setData('application/x-kawase-file', paths.join('\n'))
+          window.api.setDragPaths(paths)
         }}
         style={{
           padding: '3px 8px',
@@ -143,6 +153,7 @@ function TreeNode({ entry, depth, onSelect, changedFiles }: TreeNodeProps) {
           fontSize: 13,
           whiteSpace: 'nowrap',
           overflow: 'hidden',
+          background: selectedPaths?.has(entry.path) ? '#1a3a5c' : undefined,
           textOverflow: 'ellipsis',
           userSelect: 'none',
         }}
@@ -175,7 +186,7 @@ function TreeNode({ entry, depth, onSelect, changedFiles }: TreeNodeProps) {
         )}
       </div>
       {expanded && children.map((child) => (
-        <TreeNode key={child.path} entry={child} depth={depth + 1} onSelect={onSelect} changedFiles={changedFiles} />
+        <TreeNode key={child.path} entry={child} depth={depth + 1} onSelect={onSelect} changedFiles={changedFiles} selectedPaths={selectedPaths} />
       ))}
     </div>
   )
@@ -259,7 +270,7 @@ function SearchResults({ query, onSelect, changedFiles, workspacePath }: { query
   )
 }
 
-function FilesPanel({ entries, onSelect, searchQuery, changedFiles, workspacePath, onRefresh }: { entries: DirEntry[]; onSelect: (path: string, isDir: boolean) => void; searchQuery: string; changedFiles?: Set<string>; workspacePath: string | null; onRefresh?: () => void }) {
+function FilesPanel({ entries, onSelect, searchQuery, changedFiles, workspacePath, onRefresh, selectedPaths }: { entries: DirEntry[]; onSelect: (path: string, isDir: boolean, shiftKey?: boolean) => void; searchQuery: string; changedFiles?: Set<string>; workspacePath: string | null; onRefresh?: () => void; selectedPaths?: Set<string> }) {
   const [creatingType, setCreatingType] = useState<'file' | 'folder' | null>(null)
   const [createName, setCreateName] = useState('')
 
@@ -325,7 +336,7 @@ function FilesPanel({ entries, onSelect, searchQuery, changedFiles, workspacePat
       )}
       <div style={{ flex: 1, overflow: 'auto' }}>
         {entries.map((entry) => (
-          <TreeNode key={entry.path} entry={entry} depth={0} onSelect={onSelect} changedFiles={changedFiles} />
+          <TreeNode key={entry.path} entry={entry} depth={0} onSelect={onSelect} changedFiles={changedFiles} selectedPaths={selectedPaths} />
         ))}
         {entries.length === 0 && (
           <div style={{ padding: 16, color: '#666', fontSize: 13 }}>No workspace open</div>
@@ -824,6 +835,7 @@ function App() {
   const [workspace, setWorkspace] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [changedFiles, setChangedFiles] = useState<Set<string>>(new Set())
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set())
 
   const loadRoot = useCallback(async (path: string) => {
     const items = await window.api.readDir(path)
@@ -871,7 +883,19 @@ function App() {
     return unsub
   }, [workspace, loadRoot])
 
-  const handleSelect = useCallback((path: string, isDir: boolean) => {
+  const handleSelect = useCallback((path: string, isDir: boolean, shiftKey?: boolean) => {
+    if (shiftKey) {
+      // Shift+click: toggle in selection
+      setSelectedPaths(prev => {
+        const next = new Set(prev)
+        if (next.has(path)) next.delete(path)
+        else next.add(path)
+        return next
+      })
+      return
+    }
+    // Normal click: clear selection, open file
+    setSelectedPaths(new Set())
     if (isDir) {
       window.api.selectFolder(path)
     } else {
@@ -926,7 +950,20 @@ function App() {
         </div>
       )}
       {tab === 'files' ? (
-        <FilesPanel entries={entries} onSelect={handleSelect} searchQuery={searchQuery} changedFiles={changedFiles} workspacePath={workspace} onRefresh={() => { if (workspace) loadRoot(workspace) }} />
+        <>
+          <FilesPanel entries={entries} onSelect={handleSelect} searchQuery={searchQuery} changedFiles={changedFiles} workspacePath={workspace} onRefresh={() => { if (workspace) loadRoot(workspace) }} selectedPaths={selectedPaths} />
+          {selectedPaths.size > 0 && (
+            <div style={{ padding: '6px 12px', borderTop: '1px solid #333', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+              <span style={{ fontSize: 11, color: '#888' }}>{selectedPaths.size} selected</span>
+              <button onClick={() => { window.api.copyToClipboard(Array.from(selectedPaths).join('\n')); }}
+                style={{ background: '#333', border: 'none', color: '#ccc', borderRadius: 3, padding: '2px 8px', fontSize: 11, cursor: 'pointer' }}
+              >Copy Paths</button>
+              <button onClick={() => setSelectedPaths(new Set())}
+                style={{ background: 'none', border: 'none', color: '#666', fontSize: 11, cursor: 'pointer' }}
+              >Clear</button>
+            </div>
+          )}
+        </>
       ) : tab === 'sessions' ? (
         <SessionsPanel />
       ) : (
