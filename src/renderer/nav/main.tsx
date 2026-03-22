@@ -596,10 +596,16 @@ function GitPanel({ workspacePath }: { workspacePath: string | null }) {
       setLoading(false)
       return
     }
-    // Auto push after commit (set upstream if needed)
+    // Pull before push to avoid rejection
+    const b = branch || 'main'
+    const stashRes = await window.api.gitExec(['stash', '--include-untracked'])
+    const didStash = stashRes.ok && !(stashRes.output || '').includes('No local changes')
+    await window.api.gitExec(['pull', 'origin', b, '--no-rebase'])
+    if (didStash) await window.api.gitExec(['stash', 'pop'])
+    // Push (set upstream if needed)
     let pushRes = await window.api.gitExec(['push'])
-    if (!pushRes.ok && (pushRes.error || '').includes('no upstream')) {
-      pushRes = await window.api.gitExec(['push', '--set-upstream', 'origin', branch || 'main'])
+    if (!pushRes.ok && ((pushRes.error || '') + (pushRes.stderr || '')).includes('no upstream')) {
+      pushRes = await window.api.gitExec(['push', '--set-upstream', 'origin', b])
     }
     if (pushRes.ok) {
       setOutput('Committed & Pushed: ' + commitMsg.trim())
