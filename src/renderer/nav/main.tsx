@@ -20,6 +20,7 @@ declare global {
       setPref: (key: string, value: unknown) => Promise<void>
       listTiles: () => Promise<Array<{ id: string; type: string; sessionId?: string; filePath?: string; url?: string; focused: boolean }>>
       focusTile: (tileId: string) => void
+      cmuxExec: (args: string[]) => Promise<{ ok: boolean; output?: string; error?: string }>
     }
   }
 }
@@ -282,8 +283,34 @@ function SessionsPanel() {
   const terminals = tiles.filter(t => t.type === 'terminal')
   const others = tiles.filter(t => t.type !== 'terminal')
 
+  const createTile = useCallback((type: string) => {
+    window.api.cmuxExec(['new-pane', '--type', type])
+    setTimeout(refresh, 500)
+  }, [refresh])
+
+  const actionBtnStyle: React.CSSProperties = {
+    flex: 1, background: '#252525', border: '1px solid #444', color: '#ccc',
+    borderRadius: 4, padding: '6px 0', cursor: 'pointer', fontSize: 11, textAlign: 'center' as const,
+  }
+
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
+      {/* Action buttons */}
+      <div style={{ padding: '8px 12px', display: 'flex', gap: 4 }}>
+        <button style={actionBtnStyle} onClick={() => createTile('terminal')}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525' }}
+        >+ Terminal</button>
+        <button style={actionBtnStyle} onClick={() => createTile('browser')}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525' }}
+        >+ Browser</button>
+        <button style={actionBtnStyle} onClick={() => createTile('note')}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525' }}
+        >+ Note</button>
+      </div>
+
       {terminals.length > 0 && (
         <>
           <div style={{ padding: '6px 12px', fontSize: 11, color: '#666', textTransform: 'uppercase', letterSpacing: 0.5 }}>
