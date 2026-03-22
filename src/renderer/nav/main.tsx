@@ -309,6 +309,10 @@ function SessionsPanel() {
           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525' }}
         >+ Note</button>
+        <button style={{...actionBtnStyle, background: '#333'}} onClick={() => { window.api.cmuxExec(['fullscreen']); setTimeout(refresh, 300) }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#4a9eff' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#333' }}
+        >⛶</button>
       </div>
 
       {terminals.length > 0 && (
