@@ -13,6 +13,7 @@ import { forwardToShell } from '../index'
  *   send-key <key>      → send key to focused terminal PTY
  *   sidebar-state       → return workspace/notification info
  *   markdown open <path>→ open file in viewer tile
+ *   new-tab             → create new tab in focused terminal tile
  *   read-screen         → read terminal buffer text
  */
 
@@ -113,6 +114,11 @@ export function registerCmuxHandlers(): void {
         // Return internal state instead of calling external binary
         forwardToShell('cmux:get-state')
         return success('status: ready')
+      }
+
+      case 'new-tab': {
+        forwardToShell('cmux:new-tab')
+        return success('New tab')
       }
 
       case 'read-screen': {

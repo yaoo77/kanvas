@@ -55,9 +55,10 @@ interface TreeNodeProps {
   entry: DirEntry
   depth: number
   onSelect: (path: string, isDir: boolean) => void
+  changedFiles?: Set<string>
 }
 
-function TreeNode({ entry, depth, onSelect }: TreeNodeProps) {
+function TreeNode({ entry, depth, onSelect, changedFiles }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(false)
   const [children, setChildren] = useState<DirEntry[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -113,19 +114,71 @@ function TreeNode({ entry, depth, onSelect }: TreeNodeProps) {
       >
         <span style={{ width: 14, display: 'inline-block', color: '#888' }}>{icon}</span>
         {entry.name}
+        {changedFiles?.has(entry.path) && <span style={{ color: '#4a9eff', fontSize: 10, marginLeft: 4 }}>{'\u25CF'}</span>}
       </div>
       {expanded && children.map((child) => (
-        <TreeNode key={child.path} entry={child} depth={depth + 1} onSelect={onSelect} />
+        <TreeNode key={child.path} entry={child} depth={depth + 1} onSelect={onSelect} changedFiles={changedFiles} />
       ))}
     </div>
   )
 }
 
-function FilesPanel({ entries, onSelect }: { entries: DirEntry[]; onSelect: (path: string, isDir: boolean) => void }) {
+function flattenEntries(entries: DirEntry[]): DirEntry[] {
+  const result: DirEntry[] = []
+  for (const entry of entries) {
+    result.push(entry)
+  }
+  return result
+}
+
+function SearchResults({ entries, query, onSelect, changedFiles }: { entries: DirEntry[]; query: string; onSelect: (path: string, isDir: boolean) => void; changedFiles?: Set<string> }) {
+  const lowerQuery = query.toLowerCase()
+  const matches = flattenEntries(entries).filter(e => e.name.toLowerCase().includes(lowerQuery))
+
+  if (matches.length === 0) {
+    return <div style={{ padding: 16, color: '#666', fontSize: 13 }}>No results for &ldquo;{query}&rdquo;</div>
+  }
+
+  return (
+    <>
+      {matches.map(entry => (
+        <div
+          key={entry.path}
+          onClick={() => onSelect(entry.path, entry.isDir)}
+          style={{
+            padding: '3px 8px',
+            cursor: 'pointer',
+            fontSize: 13,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            userSelect: 'none',
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#2a2a2a' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '' }}
+        >
+          <span style={{ width: 14, display: 'inline-block', color: '#888' }}>{entry.isDir ? '\u25B8' : ' '}</span>
+          {entry.name}
+          {changedFiles?.has(entry.path) && <span style={{ color: '#4a9eff', fontSize: 10, marginLeft: 4 }}>{'\u25CF'}</span>}
+        </div>
+      ))}
+    </>
+  )
+}
+
+function FilesPanel({ entries, onSelect, searchQuery, changedFiles }: { entries: DirEntry[]; onSelect: (path: string, isDir: boolean) => void; searchQuery: string; changedFiles?: Set<string> }) {
+  if (searchQuery) {
+    return (
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        <SearchResults entries={entries} query={searchQuery} onSelect={onSelect} changedFiles={changedFiles} />
+      </div>
+    )
+  }
+
   return (
     <div style={{ flex: 1, overflow: 'auto' }}>
       {entries.map((entry) => (
-        <TreeNode key={entry.path} entry={entry} depth={0} onSelect={onSelect} />
+        <TreeNode key={entry.path} entry={entry} depth={0} onSelect={onSelect} changedFiles={changedFiles} />
       ))}
       {entries.length === 0 && (
         <div style={{ padding: 16, color: '#666', fontSize: 13 }}>No workspace open</div>
@@ -263,6 +316,8 @@ function App() {
   const [tab, setTab] = useState<NavTab>('files')
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [workspace, setWorkspace] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [changedFiles, setChangedFiles] = useState<Set<string>>(new Set())
 
   const loadRoot = useCallback(async (path: string) => {
     const items = await window.api.readDir(path)
@@ -293,8 +348,19 @@ function App() {
 
   useEffect(() => {
     if (!workspace) return
-    const unsub = window.api.onFsChanged(() => {
+    const unsub = window.api.onFsChanged((events: unknown) => {
       loadRoot(workspace)
+      const paths = Array.isArray(events) ? events.map((e: any) => e.path).filter(Boolean) as string[] : []
+      if (paths.length > 0) {
+        setChangedFiles(prev => new Set([...prev, ...paths]))
+        setTimeout(() => {
+          setChangedFiles(prev => {
+            const next = new Set(prev)
+            paths.forEach((p: string) => next.delete(p))
+            return next
+          })
+        }, 10000)
+      }
     })
     return unsub
   }, [workspace, loadRoot])
@@ -310,8 +376,51 @@ function App() {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <TabBar active={tab} onChange={setTab} />
+      {tab === 'files' && (
+        <div style={{ padding: '6px 8px', flexShrink: 0 }}>
+          <div style={{ position: 'relative' }}>
+            <input
+              type="text"
+              placeholder="Search files..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              style={{
+                width: '100%',
+                background: '#1e1e1e',
+                border: '1px solid #444',
+                borderRadius: 4,
+                padding: '4px 24px 4px 8px',
+                fontSize: 12,
+                color: '#e0e0e0',
+                outline: 'none',
+                boxSizing: 'border-box',
+              }}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                style={{
+                  position: 'absolute',
+                  right: 4,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none',
+                  border: 'none',
+                  color: '#888',
+                  cursor: 'pointer',
+                  fontSize: 14,
+                  padding: '0 2px',
+                  lineHeight: 1,
+                }}
+              >
+                {'\u00D7'}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {tab === 'files' ? (
-        <FilesPanel entries={entries} onSelect={handleSelect} />
+        <FilesPanel entries={entries} onSelect={handleSelect} searchQuery={searchQuery} changedFiles={changedFiles} />
       ) : (
         <SessionsPanel />
       )}

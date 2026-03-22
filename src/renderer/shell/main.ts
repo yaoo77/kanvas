@@ -204,18 +204,12 @@ async function init(): Promise<void> {
       navEl.style.flex = '0 0 260px'
       navResizeEl.style.display = ''
       navToggleBtn.title = 'Hide Navigator'
-      navToggleBtn.textContent = '\u25C0'  // ◀
-      navToggleBtn.style.left = `${navEl.offsetWidth + 8}px`
     } else {
       navEl.style.display = 'none'
       navResizeEl.style.display = 'none'
       navToggleBtn.title = 'Show Navigator'
-      navToggleBtn.textContent = '\u25B6'  // ▶
-      navToggleBtn.style.left = '8px'
     }
   }
-  // Set initial position
-  requestAnimationFrame(() => applyNavVisibility())
 
   navToggleBtn.addEventListener('click', () => {
     navVisible = !navVisible
@@ -1302,8 +1296,12 @@ function setupCmuxHandlers(): void {
       applyCanvasTransform()
       drawGrid()
       updateZoomIndicator()
-      // Show all tiles
-      for (const [, el] of tileElements) el.style.display = ''
+      // Show all tiles and trigger resize for webviews
+      for (const [, el] of tileElements) {
+        el.style.display = ''
+      }
+      // Trigger resize so webviews recalculate
+      window.dispatchEvent(new Event('resize'))
       fullscreenState = null
     } else if (focusedTileId) {
       // Enter fullscreen

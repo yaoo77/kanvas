@@ -11,6 +11,7 @@ declare global {
 
 interface CmuxToolbarProps {
   sessionId?: string
+  onNewTab?: () => void
 }
 
 /* ── SVG Icons (14×14, stroke-based) ── */
@@ -87,9 +88,8 @@ const BUTTONS: ToolbarButton[][] = [
     { id: 'split-down', title: 'Split Down', icon: <SplitDownIcon />, action: ['new-split', 'down'] },
   ],
   [
-    { id: 'new-ws', title: 'New Workspace', icon: <PlusIcon />, action: ['new-workspace'] },
+    { id: 'new-tab', title: 'New Tab', icon: <PlusIcon />, action: ['new-tab'] },
     { id: 'new-browser', title: 'Open Browser', icon: <GlobeIcon />, action: ['new-pane', '--type', 'browser'] },
-    { id: 'new-md', title: 'Open Markdown', icon: <DocIcon />, action: [], needsInput: 'markdown' },
   ],
   [
     { id: 'cmd-palette', title: 'Send Command', icon: <TerminalIcon />, action: [], needsInput: 'command' },
@@ -98,7 +98,7 @@ const BUTTONS: ToolbarButton[][] = [
 
 /* ── Component ── */
 
-export default function CmuxToolbar({ sessionId }: CmuxToolbarProps) {
+export default function CmuxToolbar({ sessionId, onNewTab }: CmuxToolbarProps) {
   const [status, setStatus] = useState('')
   const [progress, setProgress] = useState<number | null>(null)
   const [modal, setModal] = useState<{ type: 'markdown' | 'command'; value: string } | null>(null)
@@ -144,11 +144,18 @@ export default function CmuxToolbar({ sessionId }: CmuxToolbarProps) {
       setModal({ type: btn.needsInput, value: '' })
       return
     }
+    // Intercept new-tab: call prop instead of cmuxExec
+    if (btn.id === 'new-tab' && onNewTab) {
+      setFlashId(btn.id)
+      setTimeout(() => setFlashId(null), 120)
+      onNewTab()
+      return
+    }
     // Visual feedback
     setFlashId(btn.id)
     setTimeout(() => setFlashId(null), 120)
     exec(btn.action)
-  }, [exec])
+  }, [exec, onNewTab])
 
   const handleModalSubmit = useCallback(() => {
     if (!modal || !modal.value.trim()) { setModal(null); return }
