@@ -107,17 +107,13 @@ function TreeNode({ entry, depth, onSelect, changedFiles, selectedPaths }: TreeN
   const handleContextMenu = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault()
     const items = [
-      { label: 'Insert Path to Terminal', id: 'insert-path' },
-      { label: 'Open in Terminal', id: 'terminal' },
       { label: 'Show in Finder', id: 'finder' },
       { label: 'Copy Path', id: 'copy-path' },
       { label: 'Rename', id: 'rename' },
       { label: 'Trash', id: 'trash' },
     ]
     const result = await window.api.showContextMenu(items)
-    if (result === 'insert-path') window.api.cmuxExec(['send', entry.path + ' '])
-    else if (result === 'terminal') window.api.openInTerminal(entry.path)
-    else if (result === 'finder') window.api.showInFolder(entry.path)
+    if (result === 'finder') window.api.showInFolder(entry.path)
     else if (result === 'trash') await window.api.trashFile(entry.path)
     else if (result === 'copy-path') window.api.copyToClipboard(entry.path)
     else if (result === 'rename') {
