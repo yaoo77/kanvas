@@ -596,8 +596,11 @@ function GitPanel({ workspacePath }: { workspacePath: string | null }) {
       setLoading(false)
       return
     }
-    // Auto push after commit
-    const pushRes = await window.api.gitExec(['push'])
+    // Auto push after commit (set upstream if needed)
+    let pushRes = await window.api.gitExec(['push'])
+    if (!pushRes.ok && (pushRes.error || '').includes('no upstream')) {
+      pushRes = await window.api.gitExec(['push', '--set-upstream', 'origin', branch || 'main'])
+    }
     if (pushRes.ok) {
       setOutput('Committed & Pushed: ' + commitMsg.trim())
     } else {
@@ -608,7 +611,20 @@ function GitPanel({ workspacePath }: { workspacePath: string | null }) {
     refresh()
   }, [commitMsg, refresh])
 
-  const handlePull = useCallback(() => runGit(['pull', '--no-rebase'], 'Pulled from remote'), [runGit])
+  const handlePull = useCallback(async () => {
+    setLoading(true)
+    setOutput('')
+    // Try pull with explicit remote/branch
+    const b = branch || 'main'
+    let res = await window.api.gitExec(['pull', 'origin', b, '--no-rebase'])
+    if (res.ok) {
+      setOutput('Pulled from origin/' + b)
+    } else {
+      setOutput('Pull error: ' + (res.error || res.stderr || ''))
+    }
+    setLoading(false)
+    refresh()
+  }, [branch, refresh])
 
   const handleSetRemote = useCallback(async () => {
     const url = remoteInput.trim()
