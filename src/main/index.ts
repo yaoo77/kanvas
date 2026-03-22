@@ -324,7 +324,11 @@ app.whenReady().then(async () => {
   const workspacePath = idx >= 0 && idx < config.workspaces.length ? config.workspaces[idx] : null
   if (workspacePath) {
     startWatcher(workspacePath, (events) => {
+      // Send to shell and all webviews (nav, viewer, etc.)
       mainWindow?.webContents.send('fs-changed', events)
+      // Also forward to all webviews within the shell
+      forwardToWebview('nav', 'fs-changed', events)
+      forwardToWebview('viewer', 'fs-changed', events)
     })
   }
 })

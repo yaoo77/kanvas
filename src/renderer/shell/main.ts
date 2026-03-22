@@ -590,26 +590,41 @@ function renderTileElement(tile: Tile): void {
     bringToFront(tile.id)
   })
 
-  // Drop file path into terminal
+  // Drop file path into terminal — use overlay above webview to catch drops
   if (tile.type === 'terminal') {
-    content.addEventListener('dragover', (e) => {
+    const dropOverlay = document.createElement('div')
+    dropOverlay.style.cssText = 'position:absolute;inset:0;z-index:10;display:none;'
+
+    // Show overlay on any drag entering the tile container
+    container.addEventListener('dragenter', (e) => {
+      e.preventDefault()
+      dropOverlay.style.display = 'block'
+      dropOverlay.style.background = 'rgba(74,158,255,0.1)'
+      dropOverlay.style.border = '2px solid #4a9eff'
+      dropOverlay.style.borderRadius = '4px'
+    })
+
+    dropOverlay.addEventListener('dragover', (e) => {
       e.preventDefault()
       e.stopPropagation()
-      content.style.outline = '2px solid #4a9eff'
     })
-    content.addEventListener('dragleave', () => {
-      content.style.outline = ''
+    dropOverlay.addEventListener('dragleave', (e) => {
+      // Only hide if leaving the overlay entirely
+      if (e.relatedTarget && dropOverlay.contains(e.relatedTarget as Node)) return
+      dropOverlay.style.display = 'none'
     })
-    content.addEventListener('drop', (e) => {
+    dropOverlay.addEventListener('drop', (e) => {
       e.preventDefault()
       e.stopPropagation()
-      content.style.outline = ''
+      dropOverlay.style.display = 'none'
       const filePath = e.dataTransfer?.getData('text/plain')
       if (filePath) {
         const wv = webviews.get(tile.id)
         if (wv) (wv.webview as any).send('cmux:write-to-pty', filePath + ' ')
       }
     })
+
+    content.appendChild(dropOverlay)
   }
 
   // URL bar for browser tiles
