@@ -615,6 +615,19 @@ function GitPanel({ workspacePath }: { workspacePath: string | null }) {
     setLoading(true)
     setOutput('')
     const b = branch || 'main'
+    // Resolve any unmerged conflicts first (accept theirs)
+    const statusRes = await window.api.gitExec(['status', '--porcelain'])
+    if (statusRes.ok) {
+      const unmerged = (statusRes.output || '').split('\n').filter(l => l.startsWith('UU') || l.startsWith('AA') || l.startsWith('UD') || l.startsWith('DU'))
+      if (unmerged.length > 0) {
+        for (const line of unmerged) {
+          const file = line.slice(3)
+          await window.api.gitExec(['checkout', '--theirs', file])
+          await window.api.gitExec(['add', file])
+        }
+        await window.api.gitExec(['commit', '-m', 'chore: resolve merge conflicts (remote priority)'])
+      }
+    }
     // Stash local changes before pull
     const stashRes = await window.api.gitExec(['stash', '--include-untracked'])
     const didStash = stashRes.ok && !(stashRes.output || '').includes('No local changes')
