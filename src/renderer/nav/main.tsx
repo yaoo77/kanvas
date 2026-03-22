@@ -531,16 +531,28 @@ function statusLabel(status: string): string {
 
 function GitPanel({ workspacePath }: { workspacePath: string | null }) {
   const [branch, setBranch] = useState('')
+  const [remote, setRemote] = useState('')
   const [files, setFiles] = useState<GitFileStatus[]>([])
   const [commitMsg, setCommitMsg] = useState('')
   const [output, setOutput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [editingRemote, setEditingRemote] = useState(false)
+  const [remoteInput, setRemoteInput] = useState('')
+  const [isRepo, setIsRepo] = useState(true)
 
   const refresh = useCallback(async () => {
     if (!workspacePath) return
     try {
+      // Check if git repo
+      const revRes = await window.api.gitExec(['rev-parse', '--is-inside-work-tree'])
+      if (!revRes.ok) { setIsRepo(false); return }
+      setIsRepo(true)
+
       const branchRes = await window.api.gitExec(['branch', '--show-current'])
       if (branchRes.ok) setBranch(branchRes.output || '')
+
+      const remoteRes = await window.api.gitExec(['remote', 'get-url', 'origin'])
+      setRemote(remoteRes.ok ? (remoteRes.output || '') : '')
 
       const statusRes = await window.api.gitExec(['status', '--porcelain'])
       if (statusRes.ok) {
@@ -598,6 +610,22 @@ function GitPanel({ workspacePath }: { workspacePath: string | null }) {
 
   const handlePull = useCallback(() => runGit(['pull', '--no-rebase'], 'Pulled from remote'), [runGit])
 
+  const handleSetRemote = useCallback(async () => {
+    const url = remoteInput.trim()
+    if (!url) { setEditingRemote(false); return }
+    if (remote) {
+      await runGit(['remote', 'set-url', 'origin', url], 'Remote updated')
+    } else {
+      await runGit(['remote', 'add', 'origin', url], 'Remote added')
+    }
+    setEditingRemote(false)
+    setRemoteInput('')
+  }, [remoteInput, remote, runGit])
+
+  const handleInitRepo = useCallback(async () => {
+    await runGit(['init'], 'Git repository initialized')
+  }, [runGit])
+
   const actionBtnStyle: React.CSSProperties = {
     flex: 1, background: '#252525', border: '1px solid #444', color: '#ccc',
     borderRadius: 4, padding: '6px 0', cursor: 'pointer', fontSize: 11, textAlign: 'center',
@@ -607,12 +635,56 @@ function GitPanel({ workspacePath }: { workspacePath: string | null }) {
     return <div style={{ padding: 16, color: '#666', fontSize: 13 }}>No workspace open</div>
   }
 
+  if (!isRepo) {
+    return (
+      <div style={{ flex: 1, padding: '16px 12px' }}>
+        <div style={{ color: '#888', fontSize: 13, marginBottom: 12 }}>Not a git repository</div>
+        <button onClick={handleInitRepo} style={{
+          width: '100%', background: '#252525', border: '1px solid #444', color: '#ccc',
+          borderRadius: 4, padding: '8px 0', cursor: 'pointer', fontSize: 12,
+        }}>git init</button>
+        {output && <div style={{ padding: '8px 0', fontSize: 11, color: output.startsWith('Error') ? '#f14c4c' : '#73c991' }}>{output}</div>}
+      </div>
+    )
+  }
+
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
       {/* Branch */}
       <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6 }}>
         <span style={{ color: '#888', fontSize: 11 }}>Branch:</span>
         <span style={{ color: '#4a9eff', fontSize: 13, fontWeight: 600 }}>{branch || '...'}</span>
+      </div>
+
+      {/* Remote */}
+      <div style={{ padding: '2px 12px 6px' }}>
+        {editingRemote ? (
+          <input
+            autoFocus
+            placeholder="https://github.com/user/repo.git"
+            value={remoteInput}
+            onChange={e => setRemoteInput(e.target.value)}
+            onBlur={handleSetRemote}
+            onKeyDown={e => { if (e.key === 'Enter') handleSetRemote(); if (e.key === 'Escape') setEditingRemote(false) }}
+            style={{
+              width: '100%', background: '#1e1e1e', border: '1px solid #4a9eff',
+              borderRadius: 4, padding: '3px 6px', fontSize: 11, color: '#e0e0e0',
+              outline: 'none', boxSizing: 'border-box' as const,
+            }}
+          />
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ color: '#666', fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+              {remote || 'No remote'}
+            </span>
+            <button
+              onClick={() => { setRemoteInput(remote); setEditingRemote(true) }}
+              style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 10, padding: '0 4px' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#4a9eff' }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#888' }}
+            >{remote ? 'Edit' : 'Set'}</button>
+          </div>
+        )}
       </div>
 
       {/* Action buttons */}
