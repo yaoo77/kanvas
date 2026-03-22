@@ -83,14 +83,10 @@ interface ToolbarButton {
 
 const BUTTONS: ToolbarButton[][] = [
   [
-    { id: 'split-left', title: 'Split Left', icon: <SplitLeftIcon />, action: ['new-split', 'left'] },
-    { id: 'split-right', title: 'Split Right', icon: <SplitRightIcon />, action: ['new-split', 'right'] },
-    { id: 'split-up', title: 'Split Up', icon: <SplitUpIcon />, action: ['new-split', 'up'] },
-    { id: 'split-down', title: 'Split Down', icon: <SplitDownIcon />, action: ['new-split', 'down'] },
-  ],
-  [
     { id: 'new-tab', title: 'New Tab', icon: <PlusIcon />, action: ['new-tab'] },
     { id: 'new-browser', title: 'Open Browser', icon: <GlobeIcon />, action: ['new-pane', '--type', 'browser'] },
+    { id: 'split-right', title: 'Split Vertical', icon: <SplitRightIcon />, action: ['new-split', 'right'] },
+    { id: 'split-down', title: 'Split Horizontal', icon: <SplitDownIcon />, action: ['new-split', 'down'] },
   ],
 ]
 

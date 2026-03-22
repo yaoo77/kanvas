@@ -1293,16 +1293,20 @@ function setupCmuxHandlers(): void {
     savedViewport = { panX, panY, zoom }
     fullscreenTileId = tileId
 
-    // Expand focused tile to fill canvas
+    // Hide other tiles, expand focused
+    for (const [tid, tel] of tileElements) {
+      tel.style.opacity = tid === tileId ? '1' : '0'
+      tel.style.pointerEvents = tid === tileId ? '' : 'none'
+    }
+
     const rect = panelViewer.getBoundingClientRect()
     tile.x = 0
     tile.y = 0
-    tile.width = rect.width / zoom
-    tile.height = rect.height / zoom
+    tile.width = rect.width
+    tile.height = rect.height
     applyTilePosition(el, tile)
     bringToFront(tileId)
 
-    // Pan to show fullscreen tile
     panX = 0
     panY = 0
     zoom = 1
@@ -1322,6 +1326,11 @@ function setupCmuxHandlers(): void {
       tile.height = savedFullscreenTile.height
       const el = tileElements.get(fullscreenTileId)
       if (el) applyTilePosition(el, tile)
+    }
+    // Restore all tiles visibility
+    for (const [, tel] of tileElements) {
+      tel.style.opacity = '1'
+      tel.style.pointerEvents = ''
     }
     panX = savedViewport.panX
     panY = savedViewport.panY
