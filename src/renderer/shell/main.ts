@@ -152,17 +152,17 @@ async function init(): Promise<void> {
 
   // Forward IPC messages to webviews
   window.shellApi.onForwardToWebview((target, channel, ...args) => {
-    // If forwarding a file-selected event and no viewer tile exists, create one
+    // File selected → always create a new file tile
     if (target === 'viewer' && channel === 'file-selected' && typeof args[0] === 'string') {
-      const hasViewer = Array.from(webviews.values()).some(e => e.type === 'viewer')
-      if (!hasViewer) {
-        const filePath = args[0] as string
-        const rect = panelViewer.getBoundingClientRect()
-        const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.file.w / 2
-        const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.file.h / 2
-        createCanvasTile('file', snapToGrid(cx), snapToGrid(cy), { filePath })
-        return
-      }
+      const filePath = args[0] as string
+      // Offset each new tile slightly to avoid stacking
+      const existing = tiles.filter(t => t.type === 'file' || t.type === 'viewer')
+      const offset = existing.length * 30
+      const rect = panelViewer.getBoundingClientRect()
+      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.file.w / 2 + offset
+      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.file.h / 2 + offset
+      createCanvasTile('file', snapToGrid(cx), snapToGrid(cy), { filePath })
+      return
     }
     for (const [, entry] of webviews) {
       if (entry.type === target || (target === 'canvas' && entry.type === 'viewer')) {
@@ -1092,19 +1092,26 @@ function handleShortcut(action: string): void {
 function setupNavResize(): void {
   const handle = document.getElementById('nav-resize')!
   const nav = document.getElementById('panel-nav')!
+  const toggle = document.getElementById('nav-toggle')!
   let startX = 0
   let startWidth = 0
 
   handle.addEventListener('mousedown', (e) => {
+    e.preventDefault()
     startX = e.clientX
     startWidth = nav.offsetWidth
 
+    const overlay = createMouseOverlay()
+    overlay.style.cursor = 'col-resize'
+
     const onMove = (ev: MouseEvent) => {
       const newWidth = Math.max(180, Math.min(500, startWidth + (ev.clientX - startX)))
-      nav.style.width = `${newWidth}px`
+      nav.style.flex = `0 0 ${newWidth}px`
+      toggle.style.left = `${newWidth + 8}px`
     }
 
     const onUp = () => {
+      overlay.remove()
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
