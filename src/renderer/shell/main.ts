@@ -1293,10 +1293,9 @@ function setupCmuxHandlers(): void {
     savedViewport = { panX, panY, zoom }
     fullscreenTileId = tileId
 
-    // Hide other tiles, expand focused
+    // Hide other tiles completely
     for (const [tid, tel] of tileElements) {
-      tel.style.opacity = tid === tileId ? '1' : '0'
-      tel.style.pointerEvents = tid === tileId ? '' : 'none'
+      tel.style.display = tid === tileId ? '' : 'none'
     }
 
     const rect = panelViewer.getBoundingClientRect()
@@ -1329,8 +1328,7 @@ function setupCmuxHandlers(): void {
     }
     // Restore all tiles visibility
     for (const [, tel] of tileElements) {
-      tel.style.opacity = '1'
-      tel.style.pointerEvents = ''
+      tel.style.display = ''
     }
     panX = savedViewport.panX
     panY = savedViewport.panY
