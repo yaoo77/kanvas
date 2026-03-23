@@ -343,7 +343,16 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
       let gotFirstPrompt = false
       const onData = (payload: { sessionId: string; data: string }) => {
         if (payload.sessionId === id && term) {
-          term.write(payload.data)
+          // Intercept kanvas-open URLs from custom open/BROWSER wrapper
+          const urlMatch = payload.data.match(/kanvas-open:(https?:\/\/[^\x07\x1b]+)/)
+          if (urlMatch) {
+            window.api.cmuxExec(['new-pane', '--type', 'browser', '--url', urlMatch[1].trim()])
+            // Strip the escape sequence from terminal output
+            const cleaned = payload.data.replace(/\x1b\]7;kanvas-open:[^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+            if (cleaned) term.write(cleaned)
+          } else {
+            term.write(payload.data)
+          }
           // Enable cursor after first output
           if (!gotFirstPrompt) {
             gotFirstPrompt = true
@@ -507,6 +516,7 @@ function SplitPane({ tree, visible, focusedTermId, cwd, onFocusTerm, onSessionRe
   if (tree.type === 'terminal') {
     return (
       <TerminalSession
+        key={tree.id}
         termId={tree.id}
         visible={visible}
         focused={tree.id === focusedTermId}
@@ -537,8 +547,10 @@ function SplitPane({ tree, visible, focusedTermId, cwd, onFocusTerm, onSessionRe
         minWidth: 0,
       }}
     >
-      {tree.children.map((child, i) => (
-        <React.Fragment key={i}>
+      {tree.children.map((child, i) => {
+        const childKey = child.type === 'terminal' ? child.id : `split-${path.join('-')}-${i}`
+        return (
+        <React.Fragment key={childKey}>
           {i > 0 && (
             <SplitResizeHandle
               direction={tree.direction}
@@ -582,7 +594,7 @@ function SplitPane({ tree, visible, focusedTermId, cwd, onFocusTerm, onSessionRe
             />
           </div>
         </React.Fragment>
-      ))}
+      )})}
     </div>
   )
 }

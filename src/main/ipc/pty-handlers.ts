@@ -43,6 +43,31 @@ export function registerPtyHandlers(): void {
       'export PROMPT_EOL_MARK=""',
     ].join('\n'))
 
+    // Create kanvas bin directory with custom `open` wrapper for URLs
+    const kanvasBin = join(kanvasZshDir, 'bin')
+    if (!existsSync(kanvasBin)) mkdirSync(kanvasBin, { recursive: true })
+
+    // Custom `open` that intercepts URLs → kanvas browser tile, passes rest to real open
+    const openWrapper = join(kanvasBin, 'open')
+    writeFileSync(openWrapper, [
+      '#!/bin/bash',
+      '# kanvas: intercept URLs to open in internal browser',
+      'for arg in "$@"; do',
+      '  if [[ "$arg" =~ ^https?:// ]]; then',
+      '    printf "\\033]7;kanvas-open:%s\\033\\\\" "$arg"',
+      '    exit 0',
+      '  fi',
+      'done',
+      '/usr/bin/open "$@"',
+    ].join('\n'), { mode: 0o755 })
+
+    // BROWSER env var also points to kanvas opener
+    const browserScript = join(kanvasBin, 'kanvas-browser')
+    writeFileSync(browserScript, [
+      '#!/bin/bash',
+      'printf "\\033]7;kanvas-open:%s\\033\\\\" "$1"',
+    ].join('\n'), { mode: 0o755 })
+
     const pty = spawn(shell, [], {
       name: 'xterm-256color',
       cols,
@@ -53,6 +78,8 @@ export function registerPtyHandlers(): void {
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor',
         ZDOTDIR: kanvasZshDir,
+        BROWSER: browserScript,
+        PATH: kanvasBin + ':' + (process.env.PATH || ''),
       } as Record<string, string>
     })
 
