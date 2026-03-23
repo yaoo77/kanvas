@@ -1,6 +1,8 @@
 import { ipcMain, webContents } from 'electron'
 import { spawn, IPty } from 'node-pty'
 import { homedir } from 'os'
+import { join } from 'path'
+import { mkdirSync, writeFileSync, existsSync } from 'fs'
 
 interface PtySession {
   pty: IPty
@@ -24,8 +26,22 @@ export function registerPtyHandlers(): void {
     const webContentsId = _event.sender.id
 
     const shell = defaultShell()
-    const shellArgs = shell.endsWith('zsh') ? ['-o', 'NO_PROMPT_SP'] : []
-    const pty = spawn(shell, shellArgs, {
+
+    // Create a custom ZDOTDIR with .zshenv that disables PROMPT_SP
+    // This runs BEFORE .zshrc so it can't be overridden
+    const kanvasZshDir = join(homedir(), '.kawase', 'zsh')
+    if (!existsSync(kanvasZshDir)) mkdirSync(kanvasZshDir, { recursive: true })
+    const zshenvPath = join(kanvasZshDir, '.zshenv')
+    writeFileSync(zshenvPath, [
+      'unsetopt PROMPT_SP',
+      'export PROMPT_EOL_MARK=""',
+      // Source the real .zshenv if it exists
+      `[ -f "${homedir()}/.zshenv" ] && source "${homedir()}/.zshenv"`,
+      // Reset ZDOTDIR so .zshrc is read from HOME
+      `export ZDOTDIR="${homedir()}"`,
+    ].join('\n'))
+
+    const pty = spawn(shell, [], {
       name: 'xterm-256color',
       cols,
       rows,
@@ -34,7 +50,7 @@ export function registerPtyHandlers(): void {
         ...process.env,
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor',
-        PROMPT_EOL_MARK: ''
+        ZDOTDIR: kanvasZshDir,
       } as Record<string, string>
     })
 

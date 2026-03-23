@@ -355,11 +355,6 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
       }
 
       window.api.ptyResize(id, term.cols, term.rows)
-      // Disable PROMPT_SP after .zshrc loads, then clear screen
-      setTimeout(() => {
-        window.api.ptyWrite(id, 'unsetopt PROMPT_SP 2>/dev/null; clear\r')
-        setTimeout(() => { term?.reset() }, 300)
-      }, 500)
       onStatusChange(termId, 'connected')
 
       inputDisposable = term.onData((data) => {
