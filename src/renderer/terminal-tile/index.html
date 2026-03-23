@@ -8,11 +8,12 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; margin: 0; overflow: hidden; background: #121212; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
     #root { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
-    /* Hide xterm.js measurement artifacts */
+    /* Hide xterm.js measurement/helper artifacts */
     .xterm-char-measure-element { position: absolute !important; left: -9999px !important; }
+    .xterm-helper-textarea { position: absolute !important; top: 0 !important; left: -9999px !important; width: 1px !important; height: 1px !important; opacity: 0 !important; }
     /* Remove xterm internal padding */
     .xterm { padding: 0 !important; margin: 0 !important; overflow: hidden !important; }
-    .xterm-screen { padding: 2px 4px 0 !important; margin: 0 !important; }
+    .xterm-screen { padding: 0 4px 0 !important; margin: 0 !important; }
     .xterm-rows { padding: 0 !important; margin: 0 !important; }
     /* Make selection layer semi-transparent so text shows through */
     .xterm .xterm-selection { opacity: 0.6 !important; }

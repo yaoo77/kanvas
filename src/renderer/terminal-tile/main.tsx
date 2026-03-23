@@ -300,7 +300,7 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
         theme: {
           background: '#121212',
           foreground: '#e0e0e0',
-          cursor: '#e0e0e0',
+          cursor: '#121212',
           cursorAccent: '#121212',
           selectionBackground: '#3a3a3a',
           // ANSI colors: white base, color only for code/special output
@@ -325,9 +325,9 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
         fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', monospace",
         letterSpacing: 0,
         lineHeight: 1.0,
-        cursorBlink: true,
+        cursorBlink: false,
         cursorStyle: 'bar',
-        cursorWidth: 2,
+        cursorWidth: 1,
         scrollback: 10000,
         overviewRuler: { width: 0 },
       })
@@ -340,8 +340,17 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
       fitAddonRef.current = fitAddon
 
       // 3. Connect data listener and resize PTY
+      let gotFirstPrompt = false
       const onData = (payload: { sessionId: string; data: string }) => {
-        if (payload.sessionId === id && term) term.write(payload.data)
+        if (payload.sessionId === id && term) {
+          term.write(payload.data)
+          // Enable cursor after first output
+          if (!gotFirstPrompt) {
+            gotFirstPrompt = true
+            term.options.cursorBlink = true
+            term.options.theme = { ...term.options.theme, cursor: '#e0e0e0' }
+          }
+        }
       }
       const onExit = (payload: { sessionId: string; exitCode: number }) => {
         if (payload.sessionId === id && term) {
