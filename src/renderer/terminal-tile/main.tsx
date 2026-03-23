@@ -323,9 +323,11 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
         },
         fontSize: 14,
         fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', monospace",
-        letterSpacing: 0.5,
-        lineHeight: 1.3,
+        letterSpacing: 0,
+        lineHeight: 1.0,
         cursorBlink: true,
+        cursorStyle: 'bar',
+        cursorWidth: 2,
         scrollback: 10000,
         overviewRuler: { width: 0 },
       })

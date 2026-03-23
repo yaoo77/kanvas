@@ -11,8 +11,9 @@
     /* Hide xterm.js measurement artifacts */
     .xterm-char-measure-element { position: absolute !important; left: -9999px !important; }
     /* Remove xterm internal padding */
-    .xterm { padding: 0 !important; }
-    .xterm-screen { padding: 0 2px !important; }
+    .xterm { padding: 0 !important; margin: 0 !important; overflow: hidden !important; }
+    .xterm-screen { padding: 2px 4px 0 !important; margin: 0 !important; }
+    .xterm-rows { padding: 0 !important; margin: 0 !important; }
     /* Make selection layer semi-transparent so text shows through */
     .xterm .xterm-selection { opacity: 0.6 !important; }
     /* Hide cursor until first data arrives */

@@ -31,14 +31,16 @@ export function registerPtyHandlers(): void {
     // This runs BEFORE .zshrc so it can't be overridden
     const kanvasZshDir = join(homedir(), '.kawase', 'zsh')
     if (!existsSync(kanvasZshDir)) mkdirSync(kanvasZshDir, { recursive: true })
-    const zshenvPath = join(kanvasZshDir, '.zshenv')
-    writeFileSync(zshenvPath, [
-      'unsetopt PROMPT_SP',
+    const home = homedir()
+    // .zshenv: source real .zshenv
+    writeFileSync(join(kanvasZshDir, '.zshenv'), [
+      `[ -f "${home}/.zshenv" ] && source "${home}/.zshenv"`,
+    ].join('\n'))
+    // .zshrc: source real .zshrc, THEN disable PROMPT_SP
+    writeFileSync(join(kanvasZshDir, '.zshrc'), [
+      `[ -f "${home}/.zshrc" ] && source "${home}/.zshrc"`,
+      'unsetopt PROMPT_SP 2>/dev/null',
       'export PROMPT_EOL_MARK=""',
-      // Source the real .zshenv if it exists
-      `[ -f "${homedir()}/.zshenv" ] && source "${homedir()}/.zshenv"`,
-      // Reset ZDOTDIR so .zshrc is read from HOME
-      `export ZDOTDIR="${homedir()}"`,
     ].join('\n'))
 
     const pty = spawn(shell, [], {
