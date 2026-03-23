@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import CmuxToolbar from '../../components/CmuxToolbar'
 
 declare global {
@@ -299,9 +300,9 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
           background: '#121212',
           foreground: '#e0e0e0',
           cursor: '#e0e0e0',
-          selectionBackground: 'rgba(87, 88, 79, 0.5)',
+          selectionBackground: '#57584f',
           selectionForeground: '#fdfff1',
-          selectionInactiveBackground: 'rgba(61, 62, 55, 0.4)',
+          selectionInactiveBackground: '#3d3e37',
         },
         fontSize: 13,
         fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
@@ -312,6 +313,8 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
       fitAddon = new FitAddon()
       term.loadAddon(fitAddon)
       term.open(container)
+      // WebGL renderer for proper selectionForeground support
+      try { term.loadAddon(new WebglAddon()) } catch { /* fallback to canvas */ }
       fitAddon.fit()
 
       termRef.current = term
