@@ -61,7 +61,10 @@ function CommandInput({ onSend }: { onSend: (text: string) => void }) {
 
   const autoResize = (el: HTMLTextAreaElement) => {
     el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+    const maxH = 176 // ~8 lines at 22px line-height (cmux-style)
+    const newH = Math.min(el.scrollHeight, maxH)
+    el.style.height = newH + 'px'
+    el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
   }
 
   return (
@@ -88,9 +91,10 @@ function CommandInput({ onSend }: { onSend: (text: string) => void }) {
         rows={1}
         style={{
           flex: 1, background: 'transparent', border: 'none', outline: 'none',
-          color: '#e0e0e0', fontSize: 14, padding: '2px 0',
+          color: '#e0e0e0', fontSize: 14, padding: '4px 0',
           fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
           resize: 'none', lineHeight: '22px', overflow: 'hidden',
+          maxHeight: 176,
         }}
       />
       <button
@@ -295,7 +299,8 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
           background: '#121212',
           foreground: '#e0e0e0',
           cursor: '#e0e0e0',
-          selectionBackground: '#4a9eff44',
+          selectionBackground: 'rgba(255,255,255,0.25)',
+          selectionForeground: '#ffffff',
         },
         fontSize: 13,
         fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
