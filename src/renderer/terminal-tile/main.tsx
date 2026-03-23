@@ -300,7 +300,7 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
           background: '#121212',
           foreground: '#e0e0e0',
           cursor: '#e0e0e0',
-          selectionBackground: '#5599ff',
+          selectionBackground: '#cccccc',
         },
         fontSize: 13,
         fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
