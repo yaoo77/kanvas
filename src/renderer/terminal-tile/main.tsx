@@ -72,8 +72,9 @@ function CommandInput({ onSend }: { onSend: (text: string) => void }) {
     <div
       style={{
         display: 'flex', alignItems: 'flex-end', minHeight: 38,
-        background: '#1a1a1a', borderTop: '1px solid #333',
+        background: '#121212', borderTop: '1px solid #333',
         padding: '6px 10px', gap: 6, flexShrink: 0,
+        position: 'relative' as const, zIndex: 5,
       }}
       onPointerDown={e => e.stopPropagation()}
       onMouseDown={e => e.stopPropagation()}
@@ -297,28 +298,28 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
       // 2. Open terminal
       term = new Terminal({
         theme: {
-          background: '#1a1b26',
-          foreground: '#c0caf5',
-          cursor: '#c0caf5',
-          cursorAccent: '#1a1b26',
+          background: '#121212',
+          foreground: '#e0e0e0',
+          cursor: '#e0e0e0',
+          cursorAccent: '#121212',
           selectionBackground: '#3a3a3a',
-          // ANSI colors (Tokyo Night inspired)
-          black: '#15161e',
-          red: '#f7768e',
-          green: '#9ece6a',
-          yellow: '#e0af68',
-          blue: '#7aa2f7',
-          magenta: '#bb9af7',
-          cyan: '#7dcfff',
-          white: '#a9b1d6',
-          brightBlack: '#414868',
-          brightRed: '#f7768e',
-          brightGreen: '#9ece6a',
-          brightYellow: '#e0af68',
-          brightBlue: '#7aa2f7',
-          brightMagenta: '#bb9af7',
-          brightCyan: '#7dcfff',
-          brightWhite: '#c0caf5',
+          // ANSI colors: white base, color only for code/special output
+          black: '#1a1a1a',
+          red: '#f87171',
+          green: '#6ee7b7',
+          yellow: '#fbbf24',
+          blue: '#60a5fa',
+          magenta: '#c084fc',
+          cyan: '#67e8f9',
+          white: '#e0e0e0',
+          brightBlack: '#666666',
+          brightRed: '#fca5a5',
+          brightGreen: '#86efac',
+          brightYellow: '#fcd34d',
+          brightBlue: '#93c5fd',
+          brightMagenta: '#d8b4fe',
+          brightCyan: '#a5f3fc',
+          brightWhite: '#ffffff',
         },
         fontSize: 14,
         fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', monospace",
