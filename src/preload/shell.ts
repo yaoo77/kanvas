@@ -141,5 +141,14 @@ contextBridge.exposeInMainWorld('shellApi', {
     const handler = (_event: Electron.IpcRendererEvent, id: string) => cb(id)
     ipcRenderer.on('tiles:focus', handler)
     return () => ipcRenderer.removeListener('tiles:focus', handler)
+  },
+  onTilesClose: (cb: (tileId: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, id: string) => cb(id)
+    ipcRenderer.on('tiles:close', handler)
+    return () => ipcRenderer.removeListener('tiles:close', handler)
+  },
+  onTilesCloseAll: (cb: () => void) => {
+    ipcRenderer.on('tiles:close-all', cb)
+    return () => ipcRenderer.removeListener('tiles:close-all', cb)
   }
 })

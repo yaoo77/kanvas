@@ -156,6 +156,14 @@ function registerShellIpc(): void {
     forwardToShell('tiles:focus', tileId)
   })
 
+  ipcMain.on('tiles:close', (_e, tileId: string) => {
+    forwardToShell('tiles:close', tileId)
+  })
+
+  ipcMain.on('tiles:close-all', () => {
+    forwardToShell('tiles:close-all')
+  })
+
   ipcMain.on('shell:show-in-folder', (_e, filePath: string) => {
     shell.showItemInFolder(filePath)
   })

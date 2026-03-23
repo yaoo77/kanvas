@@ -43,6 +43,8 @@ declare global {
       onTilesListRequest: (cb: (channel: string) => void) => () => void
       sendTilesListResponse: (channel: string, tiles: unknown) => void
       onTilesFocus: (cb: (tileId: string) => void) => () => void
+      onTilesClose: (cb: (tileId: string) => void) => () => void
+      onTilesCloseAll: (cb: () => void) => () => void
     }
   }
 }
@@ -1520,6 +1522,17 @@ function setupCmuxHandlers(): void {
         scheduleSave()
       }
     }
+  })
+
+  // Close tile from session panel
+  window.shellApi.onTilesClose((tileId) => {
+    removeTile(tileId)
+  })
+
+  // Close all tiles
+  window.shellApi.onTilesCloseAll(() => {
+    const ids = tiles.map(t => t.id)
+    for (const id of ids) removeTile(id)
   })
 
   // Tile list for session panel in nav

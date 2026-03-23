@@ -148,6 +148,8 @@ contextBridge.exposeInMainWorld('api', {
   // Tile/session management
   listTiles: () => ipcRenderer.invoke('tiles:list'),
   focusTile: (tileId: string) => ipcRenderer.send('tiles:focus', tileId),
+  closeTile: (tileId: string) => ipcRenderer.send('tiles:close', tileId),
+  closeAllTiles: () => ipcRenderer.send('tiles:close-all'),
 
   // cmux integration — internal API (no external binary)
   cmuxExec: (args: string[]) => ipcRenderer.invoke('cmux:exec', args),

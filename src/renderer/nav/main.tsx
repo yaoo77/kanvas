@@ -22,6 +22,8 @@ declare global {
       focusTile: (tileId: string) => void
       cmuxExec: (args: string[]) => Promise<{ ok: boolean; output?: string; error?: string }>
       setDragPaths: (paths: string[]) => void
+      closeTile: (tileId: string) => void
+      closeAllTiles: () => void
       writeFile: (path: string, content: string) => Promise<{ ok: boolean }>
       renameFile: (old: string, newTitle: string) => Promise<{ ok: boolean; newPath?: string }>
       gitExec: (args: string[]) => Promise<{ ok: boolean; output?: string; error?: string; stderr?: string }>
@@ -442,6 +444,15 @@ function SessionsPanel() {
           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#4a9eff'; (e.currentTarget as HTMLElement).style.color = '#fff' }}
           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525'; (e.currentTarget as HTMLElement).style.color = '#ccc' }}
         >⛶ Fullscreen</button>
+        <button
+          onClick={() => { if (confirm('Close all tiles?')) { window.api.closeAllTiles(); setTimeout(refresh, 300) } }}
+          style={{
+            width: '100%', background: '#252525', border: '1px solid #444', color: '#888',
+            borderRadius: 4, padding: '6px 0', cursor: 'pointer', fontSize: 11, marginTop: 4,
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#f44'; (e.currentTarget as HTMLElement).style.color = '#fff' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#252525'; (e.currentTarget as HTMLElement).style.color = '#888' }}
+        >Close All</button>
       </div>
 
       {terminals.length > 0 && (
@@ -467,6 +478,12 @@ function SessionsPanel() {
               <span style={{ color: tile.focused ? '#e0e0e0' : '#aaa', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {tileLabel(tile)}
               </span>
+              <span
+                onClick={(e) => { e.stopPropagation(); window.api.closeTile(tile.id); setTimeout(refresh, 200) }}
+                style={{ color: '#666', fontSize: 11, cursor: 'pointer', padding: '0 2px' }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#f44' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#666' }}
+              >×</span>
             </div>
           ))}
         </>
@@ -494,6 +511,12 @@ function SessionsPanel() {
               <span style={{ color: tile.focused ? '#e0e0e0' : '#aaa', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {tileLabel(tile)}
               </span>
+              <span
+                onClick={(e) => { e.stopPropagation(); window.api.closeTile(tile.id); setTimeout(refresh, 200) }}
+                style={{ color: '#666', fontSize: 11, cursor: 'pointer', padding: '0 2px' }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#f44' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#666' }}
+              >×</span>
             </div>
           ))}
         </>
