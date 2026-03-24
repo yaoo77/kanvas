@@ -247,6 +247,36 @@ function updateSplitSizes(tree: SplitTree, path: number[], sizes: number[]): Spl
   return { ...tree, children: newChildren }
 }
 
+/* ── Session Registry: persists PTY sessions across React remounts ── */
+
+interface RegistryEntry {
+  sessionId: string
+  term: Terminal
+  fitAddon: FitAddon
+  container: HTMLDivElement  // detached xterm container element
+  resizeObserver: ResizeObserver
+  cleanupPty: () => void
+  inputDisposable: { dispose: () => void }
+  resizeDisposable: { dispose: () => void }
+  titleDisposable: { dispose: () => void }
+}
+
+const sessionRegistry = new Map<string, RegistryEntry>()
+
+/** Explicitly destroy a session (call when closing a tab or pane) */
+function destroyRegistryEntry(termId: string) {
+  const entry = sessionRegistry.get(termId)
+  if (!entry) return
+  entry.cleanupPty()
+  entry.inputDisposable.dispose()
+  entry.resizeDisposable.dispose()
+  entry.titleDisposable.dispose()
+  entry.resizeObserver.disconnect()
+  window.api.ptyKill(entry.sessionId)
+  entry.term.dispose()
+  sessionRegistry.delete(termId)
+}
+
 /* ── Per-terminal session component ── */
 
 interface TerminalSessionProps {
@@ -261,49 +291,66 @@ interface TerminalSessionProps {
 }
 
 function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStatusChange, onTitleChange, onFocus }: TerminalSessionProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const termRef = useRef<Terminal | null>(null)
-  const fitAddonRef = useRef<FitAddon | null>(null)
-  const sessionIdRef = useRef<string | null>(null)
-  const initializedRef = useRef(false)
+  const placeholderRef = useRef<HTMLDivElement>(null)
+  const attachedRef = useRef(false)
 
+  // Attach or re-attach the registry's container div into the placeholder
   useEffect(() => {
-    if (!containerRef.current || initializedRef.current) return
-    initializedRef.current = true
+    const placeholder = placeholderRef.current
+    if (!placeholder) return
 
-    const container = containerRef.current
+    const existing = sessionRegistry.get(termId)
+    if (existing) {
+      // Re-attach the existing xterm container into the new placeholder position
+      placeholder.appendChild(existing.container)
+      attachedRef.current = true
+      // Re-fit after re-attach since layout may have changed
+      requestAnimationFrame(() => {
+        existing.fitAddon.fit()
+      })
+      return () => {
+        // On unmount, detach the container but do NOT destroy the session
+        if (existing.container.parentNode === placeholder) {
+          placeholder.removeChild(existing.container)
+        }
+        attachedRef.current = false
+      }
+    }
 
-    let sessionId: string | null = null
-    let term: Terminal | null = null
-    let fitAddon: FitAddon | null = null
-    let inputDisposable: { dispose: () => void } | null = null
-    let resizeDisposable: { dispose: () => void } | null = null
-    let titleDisposable: { dispose: () => void } | null = null
-    let resizeObserver: ResizeObserver | null = null
+    // No existing session -- create a new one
+    const xtermContainer = document.createElement('div')
+    xtermContainer.style.width = '100%'
+    xtermContainer.style.height = '100%'
+    placeholder.appendChild(xtermContainer)
+    attachedRef.current = true
 
-    // 1. Estimate terminal size from container before PTY creation
-    const charW = 7.8  // approximate char width at 13px SF Mono
-    const charH = 17   // approximate char height
-    const toolbarH = 28 + 26 + 38  // CmuxToolbar + TabBar + CommandInput
-    const estCols = Math.max(20, Math.floor(container.clientWidth / charW))
-    const estRows = Math.max(5, Math.floor((container.clientHeight - toolbarH) / charH))
+    // Estimate terminal size from placeholder before PTY creation
+    const charW = 7.8
+    const charH = 17
+    const toolbarH = 28 + 26 + 38
+    const estCols = Math.max(20, Math.floor(placeholder.clientWidth / charW))
+    const estRows = Math.max(5, Math.floor((placeholder.clientHeight - toolbarH) / charH))
+
+    let cancelled = false
 
     window.api.ptyCreate(cwd ? cwd : undefined, estCols, estRows).then((result) => {
+      if (cancelled) {
+        // Component unmounted before PTY was ready -- kill it immediately
+        window.api.ptyKill(result.sessionId)
+        return
+      }
+
       const id = result.sessionId
-      sessionId = id
-      sessionIdRef.current = id
       onSessionReady(termId, id)
       window.api.notifyPtySessionId(id)
 
-      // 2. Open terminal
-      term = new Terminal({
+      const term = new Terminal({
         theme: {
           background: '#121212',
           foreground: '#e0e0e0',
           cursor: '#121212',
           cursorAccent: '#121212',
           selectionBackground: '#3a3a3a',
-          // ANSI colors: white base, color only for code/special output
           black: '#1a1a1a',
           red: '#f87171',
           green: '#6ee7b7',
@@ -331,29 +378,23 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
         scrollback: 10000,
         overviewRuler: { width: 0 },
       })
-      fitAddon = new FitAddon()
+      const fitAddon = new FitAddon()
       term.loadAddon(fitAddon)
-      term.open(container)
+      term.open(xtermContainer)
       fitAddon.fit()
 
-      termRef.current = term
-      fitAddonRef.current = fitAddon
-
-      // 3. Connect data listener and resize PTY
+      // Connect data listener
       let gotFirstPrompt = false
       const onData = (payload: { sessionId: string; data: string }) => {
-        if (payload.sessionId === id && term) {
-          // Intercept kanvas-open URLs from custom open/BROWSER wrapper
+        if (payload.sessionId === id) {
           const urlMatch = payload.data.match(/kanvas-open:(https?:\/\/[^\x07\x1b]+)/)
           if (urlMatch) {
             window.api.cmuxExec(['new-pane', '--type', 'browser', '--url', urlMatch[1].trim()])
-            // Strip the escape sequence from terminal output
             const cleaned = payload.data.replace(/\x1b\]7;kanvas-open:[^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
             if (cleaned) term.write(cleaned)
           } else {
             term.write(payload.data)
           }
-          // Enable cursor after first output
           if (!gotFirstPrompt) {
             gotFirstPrompt = true
             term.options.cursorBlink = true
@@ -362,14 +403,14 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
         }
       }
       const onExit = (payload: { sessionId: string; exitCode: number }) => {
-        if (payload.sessionId === id && term) {
+        if (payload.sessionId === id) {
           term.write(`\r\n[Process exited with code ${payload.exitCode}]\r\n`)
           onStatusChange(termId, 'exited')
         }
       }
       window.api.onPtyData(onData)
       window.api.onPtyExit(onExit)
-      ;(container as any).__cleanupPty = () => {
+      const cleanupPty = () => {
         window.api.offPtyData(onData)
         window.api.offPtyExit(onExit)
       }
@@ -377,47 +418,61 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
       window.api.ptyResize(id, term.cols, term.rows)
       onStatusChange(termId, 'connected')
 
-      inputDisposable = term.onData((data) => {
+      const inputDisposable = term.onData((data) => {
         window.api.ptyWrite(id, data)
       })
-      resizeDisposable = term.onResize(({ cols, rows }) => {
+      const resizeDisposable = term.onResize(({ cols, rows }) => {
         window.api.ptyResize(id, cols, rows)
       })
-
-      // Track title changes from terminal escape sequences
-      titleDisposable = term.onTitleChange((title) => {
+      const titleDisposable = term.onTitleChange((title) => {
         if (title) onTitleChange(termId, title)
       })
 
-      resizeObserver = new ResizeObserver(() => {
-        fitAddon?.fit()
+      const resizeObserver = new ResizeObserver(() => {
+        fitAddon.fit()
       })
-      resizeObserver.observe(container)
+      resizeObserver.observe(xtermContainer)
+
+      // Store in the global registry
+      sessionRegistry.set(termId, {
+        sessionId: id,
+        term,
+        fitAddon,
+        container: xtermContainer,
+        resizeObserver,
+        cleanupPty,
+        inputDisposable,
+        resizeDisposable,
+        titleDisposable,
+      })
     })
 
     return () => {
-      ;(container as any).__cleanupPty?.()
-      inputDisposable?.dispose()
-      resizeDisposable?.dispose()
-      titleDisposable?.dispose()
-      resizeObserver?.disconnect()
-      if (sessionId) window.api.ptyKill(sessionId)
-      term?.dispose()
+      cancelled = true
+      // On unmount during initial creation: detach but do NOT destroy.
+      // If the PTY hasn't finished creating yet, `cancelled` flag handles it.
+      if (xtermContainer.parentNode === placeholder) {
+        placeholder.removeChild(xtermContainer)
+      }
+      attachedRef.current = false
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [termId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-fit when becoming visible
+  // Re-fit when becoming visible or when focused changes (split resize)
   useEffect(() => {
-    if (visible && fitAddonRef.current) {
-      requestAnimationFrame(() => {
-        fitAddonRef.current?.fit()
-      })
+    if (visible) {
+      const entry = sessionRegistry.get(termId)
+      if (entry) {
+        requestAnimationFrame(() => {
+          entry.fitAddon.fit()
+        })
+      }
     }
-  }, [visible])
+  }, [visible, termId])
 
   return (
     <div
-      ref={containerRef}
+      ref={placeholderRef}
       onClick={onFocus}
       style={{
         flex: 1,
@@ -666,16 +721,12 @@ function App() {
   }, [])
 
   const closeTab = useCallback((tabId: string) => {
-    // Kill all sessions in the tab's tree
+    // Kill all sessions in the tab's tree via the registry
     const closing = tabsRef.current.find(t => t.id === tabId)
     if (closing) {
-      const sessionIds = collectSessionIds(closing.tree)
-      for (const sid of sessionIds) {
-        window.api.ptyKill(sid)
-      }
-      // Clean up termSessionMap
       const termIds = collectTermIds(closing.tree)
       for (const tid of termIds) {
+        destroyRegistryEntry(tid)
         termSessionMap.current.delete(tid)
       }
     }
@@ -787,11 +838,10 @@ function App() {
 
     if (!keepNode) return
 
-    // Kill all other sessions
+    // Kill all other sessions via the registry
     for (const tid of allTermIds) {
       if (tid !== keepTermId) {
-        const sid = termSessionMap.current.get(tid)
-        if (sid) window.api.ptyKill(sid)
+        destroyRegistryEntry(tid)
         termSessionMap.current.delete(tid)
       }
     }
@@ -808,8 +858,7 @@ function App() {
     if (!tab || tab.tree.type === 'terminal') return // Can't close the only terminal
 
     const termId = tab.focusedTermId
-    const sid = termSessionMap.current.get(termId)
-    if (sid) window.api.ptyKill(sid)
+    destroyRegistryEntry(termId)
     termSessionMap.current.delete(termId)
 
     const newTree = removeTermNode(tab.tree, termId)
