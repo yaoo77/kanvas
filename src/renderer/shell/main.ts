@@ -503,6 +503,21 @@ function removeTile(id: string): void {
   scheduleSave()
 }
 
+function findTileAtPoint(clientX: number, clientY: number): Tile | null {
+  const rect = panelViewer.getBoundingClientRect()
+  const canvasX = (clientX - rect.left - panX) / zoom
+  const canvasY = (clientY - rect.top - panY) / zoom
+  // Find topmost tile (highest zIndex) that contains the point
+  let best: Tile | null = null
+  for (const tile of tiles) {
+    if (canvasX >= tile.x && canvasX <= tile.x + tile.width &&
+        canvasY >= tile.y && canvasY <= tile.y + tile.height) {
+      if (!best || tile.zIndex > best.zIndex) best = tile
+    }
+  }
+  return best
+}
+
 function bringToFront(id: string): void {
   const tile = tiles.find(t => t.id === id)
   if (!tile) return
@@ -593,12 +608,13 @@ function renderTileElement(tile: Tile): void {
     bringToFront(tile.id)
   })
 
-  // Drop file path into terminal — use overlay above webview to catch drops
+  // Drop visual feedback for terminal tiles
+  // Actual drop handling is in terminal-tile webview (File.path available with sandbox=false)
   if (tile.type === 'terminal') {
     const dropOverlay = document.createElement('div')
-    dropOverlay.style.cssText = 'position:absolute;inset:0;z-index:10;display:none;'
+    // pointer-events:none — purely visual, lets drops pass through to webview
+    dropOverlay.style.cssText = 'position:absolute;inset:0;z-index:10;display:none;pointer-events:none;'
 
-    // Show overlay on any drag entering the tile container
     container.addEventListener('dragenter', (e) => {
       e.preventDefault()
       dropOverlay.style.display = 'block'
@@ -606,51 +622,15 @@ function renderTileElement(tile: Tile): void {
       dropOverlay.style.border = '2px solid #4a9eff'
       dropOverlay.style.borderRadius = '4px'
     })
-
-    dropOverlay.addEventListener('dragover', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-    })
-    dropOverlay.addEventListener('dragleave', (e) => {
-      // Only hide if leaving the overlay entirely
-      if (e.relatedTarget && dropOverlay.contains(e.relatedTarget as Node)) return
+    container.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget && container.contains(e.relatedTarget as Node)) return
       dropOverlay.style.display = 'none'
     })
-    dropOverlay.addEventListener('drop', async (e) => {
+    container.addEventListener('dragover', (e) => {
       e.preventDefault()
-      e.stopPropagation()
-      dropOverlay.style.display = 'none'
-      // Try dataTransfer first, then fall back to stored drag paths
-      let filePath = e.dataTransfer?.getData('text/plain')
-      if (!filePath) {
-        const paths = await window.shellApi.getDragPaths()
-        if (paths && paths.length > 0) filePath = paths.join(' ')
-      }
-      console.log('[drop] filePath:', filePath)
-      if (filePath) {
-        const wv = webviews.get(tile.id)
-        if (wv) (wv.webview as any).send('cmux:write-to-pty', filePath + ' ')
-      }
     })
-
-    // Also listen on content div directly as fallback
-    content.addEventListener('drop', async (e) => {
-      e.preventDefault()
-      e.stopPropagation()
+    container.addEventListener('drop', () => {
       dropOverlay.style.display = 'none'
-      let filePath = e.dataTransfer?.getData('text/plain')
-      if (!filePath) {
-        const paths = await window.shellApi.getDragPaths()
-        if (paths && paths.length > 0) filePath = paths.join(' ')
-      }
-      console.log('[content drop] filePath:', filePath)
-      if (filePath) {
-        const wv = webviews.get(tile.id)
-        if (wv) (wv.webview as any).send('cmux:write-to-pty', filePath + ' ')
-      }
-    })
-    content.addEventListener('dragover', (e) => {
-      e.preventDefault()
     })
 
     content.appendChild(dropOverlay)
@@ -843,6 +823,9 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
     if (event.channel === 'pty-session-id') {
       tile.sessionId = event.args?.[0]
       scheduleSave()
+    }
+    if (event.channel === 'request-remove-tile') {
+      removeTile(tile.id)
     }
   })
 }
@@ -1084,10 +1067,17 @@ function setupCanvasInteractions(): void {
       spaceHeld = true
       if (!isPanning) panelViewer.style.cursor = 'grab'
     }
-    // Cmd+W to close focused tile
+    // Cmd+W to close focused pane/tab/tile (progressive)
     if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
       e.preventDefault()
-      if (focusedTileId) removeTile(focusedTileId)
+      if (focusedTileId) {
+        const wv = webviews.get(focusedTileId)
+        if (wv && wv.type === 'terminal') {
+          ;(wv.webview as any).send('close-pane-or-tab')
+        } else {
+          removeTile(focusedTileId)
+        }
+      }
     }
   })
 
@@ -1130,6 +1120,31 @@ function setupCanvasInteractions(): void {
       } else {
         createCanvasTile('file', snapToGrid(baseX + offset), snapToGrid(baseY + offset), { filePath })
       }
+    }
+  })
+
+  // Finder file drop onto terminal tiles (document-level to catch drops on webview areas)
+  document.addEventListener('dragover', (e) => {
+    // Allow drops from Finder (files from OS have types including 'Files')
+    if (e.dataTransfer?.types?.includes('Files')) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+    }
+  })
+  document.addEventListener('drop', (e) => {
+    if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return
+    // Check if drop is over a terminal tile by hit-testing coordinates
+    const targetTile = findTileAtPoint(e.clientX, e.clientY)
+    if (!targetTile || targetTile.type !== 'terminal') return
+    e.preventDefault()
+    const paths: string[] = []
+    for (let i = 0; i < e.dataTransfer.files.length; i++) {
+      const f = e.dataTransfer.files[i] as any
+      if (f.path) paths.push(f.path.includes(' ') ? `'${f.path}'` : f.path)
+    }
+    if (paths.length > 0) {
+      const wv = webviews.get(targetTile.id)
+      if (wv) (wv.webview as any).send('cmux:write-to-pty', paths.join(' ') + ' ')
     }
   })
 

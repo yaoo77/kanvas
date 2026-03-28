@@ -34,6 +34,12 @@ ipcRenderer.on('cmux:write-to-pty', (_e, text) => {
   for (const cb of cmuxWriteListeners) cb(text)
 })
 
+/* ── close-pane-or-tab from shell (Cmd+W) ── */
+const closePaneOrTabListeners = new Set<() => void>()
+ipcRenderer.on('close-pane-or-tab', () => {
+  for (const cb of closePaneOrTabListeners) cb()
+})
+
 /* ── Buffered workspace path ── */
 
 let bufferedWorkspacePath: string | null = null
@@ -157,6 +163,11 @@ contextBridge.exposeInMainWorld('api', {
   // cmux write-to-pty (from shell via webview message)
   onCmuxWrite: (cb: (text: string) => void) => { cmuxWriteListeners.add(cb) },
   offCmuxWrite: (cb: (text: string) => void) => { cmuxWriteListeners.delete(cb) },
+
+  // close-pane-or-tab (Cmd+W from shell)
+  onClosePaneOrTab: (cb: () => void) => { closePaneOrTabListeners.add(cb) },
+  offClosePaneOrTab: (cb: () => void) => { closePaneOrTabListeners.delete(cb) },
+  requestRemoveTile: () => ipcRenderer.sendToHost('request-remove-tile'),
 
   // Git operations
   gitExec: (args: string[]) => ipcRenderer.invoke('git:exec', args),

@@ -470,6 +470,58 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
     }
   }, [visible, termId])
 
+  // File drop from Finder → paste path into terminal
+  useEffect(() => {
+    const el = placeholderRef.current
+    if (!el) return
+
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault()
+      el.style.outline = '2px solid #4a9eff'
+      el.style.background = 'rgba(74,158,255,0.08)'
+    }
+    const onDragLeave = (e: DragEvent) => {
+      if (e.relatedTarget && el.contains(e.relatedTarget as Node)) return
+      el.style.outline = focused ? '1px solid #4a9eff55' : 'none'
+      el.style.background = ''
+    }
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      el.style.outline = focused ? '1px solid #4a9eff55' : 'none'
+      el.style.background = ''
+
+      const entry = sessionRegistry.get(termId)
+      if (!entry) return
+
+      // File.path from Electron (requires sandbox=false)
+      if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+        const paths: string[] = []
+        for (let i = 0; i < e.dataTransfer.files.length; i++) {
+          const f = e.dataTransfer.files[i] as any
+          if (f.path) paths.push(f.path.includes(' ') ? `'${f.path}'` : f.path)
+        }
+        if (paths.length > 0) {
+          window.api.ptyWrite(entry.sessionId, paths.join(' ') + ' ')
+          return
+        }
+      }
+      // Fallback: plain text
+      const text = e.dataTransfer?.getData('text/plain')
+      if (text) window.api.ptyWrite(entry.sessionId, text + ' ')
+    }
+
+    // Capture phase to intercept before xterm
+    el.addEventListener('dragover', onDragOver, true)
+    el.addEventListener('dragleave', onDragLeave, true)
+    el.addEventListener('drop', onDrop, true)
+    return () => {
+      el.removeEventListener('dragover', onDragOver, true)
+      el.removeEventListener('dragleave', onDragLeave, true)
+      el.removeEventListener('drop', onDrop, true)
+    }
+  }, [termId, focused])
+
   return (
     <div
       ref={placeholderRef}
@@ -696,6 +748,44 @@ function App() {
       window.api.offCmuxWrite(onCmuxWrite)
     }
   }, [activeTabId])
+
+  // Cmd+W: close focused pane → tab → tile (progressive)
+  useEffect(() => {
+    const closePaneOrTab = () => {
+      const tabs = tabsRef.current
+      const active = tabs.find(t => t.id === activeTabId)
+      if (!active) return
+
+      if (active.tree.type === 'split') {
+        handleCloseFocusedPane(active.id)
+        return
+      }
+
+      if (tabs.length > 1) {
+        closeTab(active.id)
+        return
+      }
+
+      window.api.requestRemoveTile()
+    }
+
+    // Listen via IPC (from shell when canvas has focus)
+    window.api.onClosePaneOrTab(closePaneOrTab)
+
+    // Listen via keydown (when terminal webview has focus)
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
+        e.preventDefault()
+        closePaneOrTab()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+
+    return () => {
+      window.api.offClosePaneOrTab(closePaneOrTab)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [activeTabId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Expose addTab globally for cmux:new-tab IPC
   useEffect(() => {

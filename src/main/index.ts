@@ -74,7 +74,7 @@ function createWindow(): void {
     webPreferences: {
       preload: getPreloadPath('shell'),
       contextIsolation: true,
-      sandbox: true,
+      sandbox: false,
       webviewTag: true
     }
   }
@@ -86,6 +86,11 @@ function createWindow(): void {
 
   mainWindow = new BrowserWindow(windowOptions)
   if (state.isMaximized) mainWindow.maximize()
+
+  // Allow File.path in webview guests (needed for Finder file drops)
+  mainWindow.webContents.on('will-attach-webview', (_event, webPreferences) => {
+    webPreferences.sandbox = false
+  })
 
   // Save window state on move/resize
   let saveTimeout: NodeJS.Timeout | null = null
