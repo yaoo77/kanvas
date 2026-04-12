@@ -1413,7 +1413,6 @@ function renderTileElement(tile: Tile): void {
   container.style.cssText += `
     position: absolute;
     border-radius: 6px;
-    overflow: hidden;
     background: #1e1e1e;
     display: flex;
     flex-direction: column;
