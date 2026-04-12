@@ -795,6 +795,7 @@ function updateZoomIndicator(): void {
 function applyCanvasTransform(): void {
   tileLayer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`
   tileLayer.style.transformOrigin = '0 0'
+  // conn-layer and draw-layer are inside tile-layer, so they inherit the transform
   drawConnections()
   drawShapes()
 }
@@ -802,19 +803,15 @@ function applyCanvasTransform(): void {
 // Phase 3-19: Drawing layer
 function drawShapes(): void {
   if (!drawLayer) return
-  const rect = panelViewer.getBoundingClientRect()
-  drawLayer.setAttribute('width', String(rect.width))
-  drawLayer.setAttribute('height', String(rect.height))
-  drawLayer.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`)
+  // Use canvas space (draw-layer has same CSS transform as tile-layer)
+  drawLayer.setAttribute('viewBox', '0 0 10000 10000')
   while (drawLayer.firstChild) drawLayer.removeChild(drawLayer.firstChild)
   const allShapes = currentShape ? [...shapes, currentShape] : shapes
   for (const shape of allShapes) {
     if (shape.points.length < 2) continue
     const d = shape.points
       .map(([cx, cy], i) => {
-        const sx = cx * zoom + panX
-        const sy = cy * zoom + panY
-        return `${i === 0 ? 'M' : 'L'} ${sx.toFixed(1)} ${sy.toFixed(1)}`
+        return `${i === 0 ? 'M' : 'L'} ${cx.toFixed(1)} ${cy.toFixed(1)}`
       })
       .join(' ')
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
@@ -845,34 +842,56 @@ function getTileCenter(tile: Tile): { x: number; y: number } {
   return { x: tile.x + tile.width / 2, y: tile.y + tile.height / 2 }
 }
 
+// Get edge point on tile closest to target point
+function getTileEdge(tile: Tile, target: { x: number; y: number }): { x: number; y: number } {
+  const cx = tile.x + tile.width / 2
+  const cy = tile.y + tile.height / 2
+  const dx = target.x - cx
+  const dy = target.y - cy
+  if (dx === 0 && dy === 0) return { x: cx, y: cy }
+  const absDx = Math.abs(dx)
+  const absDy = Math.abs(dy)
+  const hw = tile.width / 2
+  const hh = tile.height / 2
+  // Determine which edge to use
+  if (absDx / hw > absDy / hh) {
+    // horizontal edge
+    const t = hw / absDx
+    return { x: cx + dx * t, y: cy + dy * t }
+  } else {
+    const t = hh / absDy
+    return { x: cx + dx * t, y: cy + dy * t }
+  }
+}
+
 function screenFromCanvas(cx: number, cy: number): { x: number; y: number } {
   return { x: cx * zoom + panX, y: cy * zoom + panY }
 }
 
 function drawConnections(): void {
   if (!connLayer) return
-  const rect = panelViewer.getBoundingClientRect()
-  connLayer.setAttribute('width', String(rect.width))
-  connLayer.setAttribute('height', String(rect.height))
-  connLayer.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`)
+  // Use a large viewBox in canvas space (conn-layer has same CSS transform as tile-layer)
+  // SVG is inside tile-layer at (0,0), 10000x10000. Canvas coords work directly.
+  connLayer.setAttribute('viewBox', '0 0 10000 10000')
   while (connLayer.firstChild) connLayer.removeChild(connLayer.firstChild)
   for (const conn of connections) {
     const from = tiles.find((t) => t.id === conn.from)
     const to = tiles.find((t) => t.id === conn.to)
     if (!from || !to) continue
-    const a = getTileCenter(from)
-    const b = getTileCenter(to)
-    const sa = screenFromCanvas(a.x, a.y)
-    const sb = screenFromCanvas(b.x, b.y)
-    const dx = sb.x - sa.x
-    const dy = sb.y - sa.y
+    // Use tile edge points (not centers) so lines are visible even when tiles are large
+    const ac = getTileCenter(from)
+    const bc = getTileCenter(to)
+    const a = getTileEdge(from, bc)
+    const b = getTileEdge(to, ac)
+    const dx = b.x - a.x
+    const dy = b.y - a.y
     const curvature = 0.3
-    const c1x = sa.x + dx * curvature
-    const c1y = sa.y + dy * 0.8
-    const c2x = sa.x + dx * (1 - curvature)
-    const c2y = sa.y + dy * 0.2
+    const c1x = a.x + dx * curvature
+    const c1y = a.y + dy * 0.8
+    const c2x = a.x + dx * (1 - curvature)
+    const c2y = a.y + dy * 0.2
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-    path.setAttribute('d', `M ${sa.x} ${sa.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${sb.x} ${sb.y}`)
+    path.setAttribute('d', `M ${a.x} ${a.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${b.x} ${b.y}`)
     path.classList.add('conn-line')
     path.setAttribute('data-conn-id', conn.id)
     path.addEventListener('click', (e) => {
@@ -883,14 +902,17 @@ function drawConnections(): void {
     })
     connLayer.appendChild(path)
   }
-  // Drafting line
+  // Drafting line (mouse position needs to be in canvas coords)
   if (draftingConnection && draftingMouse) {
     const from = tiles.find((t) => t.id === draftingConnection.fromId)
     if (from) {
       const a = getTileCenter(from)
-      const sa = screenFromCanvas(a.x, a.y)
+      // Convert draftingMouse from screen to canvas
+      const rect = panelViewer.getBoundingClientRect()
+      const mx = (draftingMouse.x - panX) / zoom
+      const my = (draftingMouse.y - panY) / zoom
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-      path.setAttribute('d', `M ${sa.x} ${sa.y} L ${draftingMouse.x} ${draftingMouse.y}`)
+      path.setAttribute('d', `M ${a.x} ${a.y} L ${mx} ${my}`)
       path.classList.add('conn-line', 'drafting')
       connLayer.appendChild(path)
     }
