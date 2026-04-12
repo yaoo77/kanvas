@@ -56,6 +56,8 @@ declare global {
       onTilesFocus: (cb: (tileId: string) => void) => () => void
       onTilesClose: (cb: (tileId: string) => void) => () => void
       onTilesCloseAll: (cb: () => void) => () => void
+      noteReadFile: (filePath: string) => Promise<string>
+      noteWriteFile: (filePath: string, content: string) => Promise<void>
     }
   }
 }
@@ -80,6 +82,7 @@ interface Tile {
   cwd?: string              // Phase 1b-27: remembered working directory
   roleId?: string           // Phase 3-17: assigned agent role
   noteContent?: string      // Phase 3-14: sticky note markdown body
+  noteFilePath?: string     // Phase 6: path to .md file on disk
 }
 
 interface CanvasState {
@@ -202,6 +205,7 @@ let zoom = 1
 let focusedTileId: string | null = null
 let selectedTileIds = new Set<string>()
 let spaceHeld = false
+let cmdHeld = false
 
 // Fullscreen state (module-scoped for createCanvasTile access)
 let isFullscreen = false
@@ -333,6 +337,34 @@ async function init(): Promise<void> {
   let keymap: Record<string, string> = {}
   try { keymap = await window.shellApi.keymapLoad() } catch { keymap = {} }
   setupKeybindings(keymap)
+
+  // Cmd+number tile jumping
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Meta') {
+      cmdHeld = true
+      if (!isInputFocused()) showTileNumberBadges()
+    }
+    if (cmdHeld && e.key >= '1' && e.key <= '9' && !isInputFocused()) {
+      e.preventDefault()
+      const idx = parseInt(e.key) - 1
+      const sortedTiles = [...tiles].sort((a, b) => (a.y * 10000 + a.x) - (b.y * 10000 + b.x))
+      if (idx < sortedTiles.length) {
+        const t = sortedTiles[idx]
+        bringToFront(t.id)
+        centerViewportOnTile(t, true)
+      }
+    }
+  })
+  document.addEventListener('keyup', (e) => {
+    if (e.key === 'Meta') {
+      cmdHeld = false
+      hideTileNumberBadges()
+    }
+  })
+  window.addEventListener('blur', () => {
+    cmdHeld = false
+    hideTileNumberBadges()
+  })
 
   // Phase 4-24: kanvas CLI request handler
   window.shellApi.onCliRequest(async (id, method, params: any) => {
@@ -545,37 +577,51 @@ async function init(): Promise<void> {
   document.getElementById('zoom-out')!.addEventListener('click', (e) => { e.stopPropagation(); applyZoom(50) })
   document.getElementById('zoom-reset')!.addEventListener('click', (e) => { e.stopPropagation(); resetView() })
 
-  // Phase 1b-25: New-tile FAB (top-right) with dropdown menu
+  // Maestri-style icon toolbar (top-center)
+  const toolbarStrip = document.getElementById('tile-toolbar-strip')
+  if (toolbarStrip) {
+    toolbarStrip.addEventListener('mousedown', (e) => e.stopPropagation())
+    toolbarStrip.addEventListener('pointerdown', (e) => e.stopPropagation())
+    toolbarStrip.addEventListener('dblclick', (e) => e.stopPropagation())
+    toolbarStrip.querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const kind = (btn as HTMLButtonElement).dataset.kind as Tile['type'] | undefined
+        const action = (btn as HTMLButtonElement).dataset.action
+
+        // Handle draw toggle
+        if (action === 'toggle-draw') {
+          toggleDrawMode()
+          btn.classList.toggle('active', drawMode)
+          return
+        }
+
+        // Handle file open
+        if (action === 'open-file') {
+          const filesTab = document.querySelector('#nav-tabs button') as HTMLButtonElement | null
+          filesTab?.click()
+          return
+        }
+
+        // Create tile
+        if (kind) {
+          const rect = panelViewer.getBoundingClientRect()
+          const size = DEFAULT_SIZES[kind] || DEFAULT_SIZES.terminal
+          const cx = (-panX + rect.width / 2) / zoom - size.w / 2
+          const cy = (-panY + rect.height / 2) / zoom - size.h / 2
+          const tile = createCanvasTile(kind, snapToGrid(cx), snapToGrid(cy))
+          if (kind === 'filetree') {
+            window.shellApi.getWorkspacePath().then((wp: string | null) => {
+              if (wp) { tile.folderPath = wp; scheduleSave() }
+            })
+          }
+        }
+      })
+    })
+  }
+  // Legacy FAB references (hidden)
   const fab = document.getElementById('new-tile-fab')!
   const fabMenu = document.getElementById('new-tile-menu')!
-  fab.addEventListener('mousedown', (e) => e.stopPropagation())
-  fab.addEventListener('click', (e) => {
-    e.stopPropagation()
-    fabMenu.classList.toggle('open')
-  })
-  fabMenu.querySelectorAll('button[data-kind]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      const kind = (btn as HTMLButtonElement).dataset.kind as Tile['type']
-      const rect = panelViewer.getBoundingClientRect()
-      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.terminal.w / 2
-      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.terminal.h / 2
-      if (kind === 'terminal' || kind === 'note' || kind === 'browser' || kind === 'filetree') {
-        const tile = createCanvasTile(kind, snapToGrid(cx), snapToGrid(cy))
-        if (kind === 'filetree') {
-          window.shellApi.getWorkspacePath().then((wp) => {
-            if (wp) { tile.folderPath = wp; scheduleSave() }
-          })
-        }
-      }
-      fabMenu.classList.remove('open')
-    })
-  })
-  document.addEventListener('mousedown', (e) => {
-    if (!fabMenu.contains(e.target as Node) && !fab.contains(e.target as Node)) {
-      fabMenu.classList.remove('open')
-    }
-  })
 
   // Resize observer for grid redraw
   const ro = new ResizeObserver(() => drawGrid())
@@ -594,6 +640,8 @@ async function init(): Promise<void> {
 
   drawGrid()
   updateZoomIndicator()
+  setupMinimap()
+  renderMinimap()
 }
 
 // ─── Canvas state persistence ────────────────────────────────────────
@@ -646,6 +694,7 @@ function scheduleSave(): void {
       connections, shapes,
     }
     window.shellApi.canvasSaveState(state)
+    renderMinimap()
   }, 500)
 }
 
@@ -798,6 +847,138 @@ function applyCanvasTransform(): void {
   // conn-layer and draw-layer are inside tile-layer, so they inherit the transform
   drawConnections()
   drawShapes()
+  renderMinimap()
+}
+
+
+// ─── Minimap ─────────────────────────────────────────────────────────
+
+function renderMinimap(): void {
+  const canvas = document.getElementById('minimap-canvas') as HTMLCanvasElement
+  if (!canvas) return
+  const container = document.getElementById('minimap')!
+  const dpr = window.devicePixelRatio || 1
+  const w = container.clientWidth
+  const h = container.clientHeight
+  canvas.width = w * dpr
+  canvas.height = h * dpr
+  const ctx = canvas.getContext('2d')!
+  ctx.scale(dpr, dpr)
+  ctx.clearRect(0, 0, w, h)
+
+  if (tiles.length === 0) return
+
+  // Calculate bounding box of all tiles with padding
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const t of tiles) {
+    minX = Math.min(minX, t.x)
+    minY = Math.min(minY, t.y)
+    maxX = Math.max(maxX, t.x + t.width)
+    maxY = Math.max(maxY, t.y + t.height)
+  }
+
+  // Add padding and include viewport
+  const viewerRect = panelViewer.getBoundingClientRect()
+  const vpLeft = -panX / zoom
+  const vpTop = -panY / zoom
+  const vpRight = vpLeft + viewerRect.width / zoom
+  const vpBottom = vpTop + viewerRect.height / zoom
+
+  minX = Math.min(minX, vpLeft) - 200
+  minY = Math.min(minY, vpTop) - 200
+  maxX = Math.max(maxX, vpRight) + 200
+  maxY = Math.max(maxY, vpBottom) + 200
+
+  const worldW = maxX - minX
+  const worldH = maxY - minY
+  const scale = Math.min(w / worldW, h / worldH)
+
+  const offsetX = (w - worldW * scale) / 2
+  const offsetY = (h - worldH * scale) / 2
+
+  // Draw tiles
+  const typeColors: Record<string, string> = {
+    terminal: 'rgba(74, 158, 255, 0.7)',
+    note: 'rgba(255, 200, 80, 0.7)',
+    browser: 'rgba(80, 200, 120, 0.7)',
+    viewer: 'rgba(200, 120, 255, 0.7)',
+    file: 'rgba(200, 120, 255, 0.7)',
+    graph: 'rgba(255, 120, 120, 0.7)',
+    filetree: 'rgba(120, 200, 200, 0.7)',
+  }
+
+  for (const t of tiles) {
+    const rx = (t.x - minX) * scale + offsetX
+    const ry = (t.y - minY) * scale + offsetY
+    const rw = t.width * scale
+    const rh = t.height * scale
+    ctx.fillStyle = typeColors[t.type] || 'rgba(150,150,150,0.7)'
+    ctx.fillRect(rx, ry, Math.max(rw, 2), Math.max(rh, 2))
+
+    // Highlight focused tile
+    if (t.id === focusedTileId) {
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 1.5
+      ctx.strokeRect(rx, ry, rw, rh)
+    }
+  }
+
+  // Draw viewport rectangle
+  const vx = (vpLeft - minX) * scale + offsetX
+  const vy = (vpTop - minY) * scale + offsetY
+  const vw = (viewerRect.width / zoom) * scale
+  const vh = (viewerRect.height / zoom) * scale
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)'
+  ctx.lineWidth = 1.5
+  ctx.strokeRect(vx, vy, vw, vh)
+
+  // Store mapping for click handling
+  ;(canvas as any)._minimapState = { minX, minY, scale, offsetX, offsetY }
+}
+
+function setupMinimap(): void {
+  // Dynamically create minimap if it does not exist
+  let mmContainer = document.getElementById('minimap')
+  if (!mmContainer) {
+    mmContainer = document.createElement('div')
+    mmContainer.id = 'minimap'  
+    const cvs = document.createElement('canvas')
+    cvs.id = 'minimap-canvas'  
+    cvs.style.cssText = 'width:100%;height:100%;'
+    mmContainer.appendChild(cvs)
+    panelViewer.appendChild(mmContainer)
+  }
+  const canvas = document.getElementById('minimap-canvas') as HTMLCanvasElement
+  if (!canvas) return
+  let dragging = false
+
+  function panToMinimapPoint(clientX: number, clientY: number): void {
+    const rect = canvas.getBoundingClientRect()
+    const mx = clientX - rect.left
+    const my = clientY - rect.top
+    const state = (canvas as any)._minimapState
+    if (!state) return
+    const worldX = (mx - state.offsetX) / state.scale + state.minX
+    const worldY = (my - state.offsetY) / state.scale + state.minY
+    const viewerRect = panelViewer.getBoundingClientRect()
+    panX = -(worldX * zoom - viewerRect.width / 2)
+    panY = -(worldY * zoom - viewerRect.height / 2)
+    applyCanvasTransform()
+    drawGrid()
+    scheduleSave()
+  }
+
+  canvas.addEventListener('mousedown', (e) => {
+    e.stopPropagation()
+    dragging = true
+    panToMinimapPoint(e.clientX, e.clientY)
+  })
+
+  document.addEventListener('mousemove', (e) => {
+    if (dragging) panToMinimapPoint(e.clientX, e.clientY)
+  })
+
+  document.addEventListener('mouseup', () => { dragging = false })
 }
 
 // Phase 3-19: Drawing layer
@@ -921,6 +1102,58 @@ function drawConnections(): void {
 
 let draftingMouse: { x: number; y: number } | null = null
 
+// Phase 3-17b: Inject/remove role system prompt into CLAUDE.md in tile's cwd
+async function injectRoleIntoCLAUDEmd(cwd: string, role: AgentRole | null): Promise<void> {
+  const claudeMdPath = cwd + '/CLAUDE.md'
+  const marker = '[kanvas-role]'
+  try {
+    let existing = ''
+    try {
+      existing = await window.shellApi.noteReadFile(claudeMdPath)
+    } catch {
+      // file doesn't exist yet
+    }
+    if (role) {
+      const roleSection = `\n${marker}\nRole: ${role.name} ${role.icon}\n${role.systemPrompt}\n`
+      if (existing.includes(marker)) {
+        // Replace existing [kanvas-role] section
+        const startIdx = existing.indexOf(marker)
+        // Find next section marker (line starting with \n[) or end of file
+        const rest = existing.substring(startIdx + marker.length)
+        const nextSection = rest.search(/\n\[(?!kanvas-role)/)
+        if (nextSection !== -1) {
+          const after = rest.substring(nextSection)
+          existing = existing.substring(0, startIdx) + roleSection.trimStart() + after
+        } else {
+          existing = existing.substring(0, startIdx) + roleSection.trimStart()
+        }
+        await window.shellApi.noteWriteFile(claudeMdPath, existing)
+      } else {
+        // Append role section
+        await window.shellApi.noteWriteFile(claudeMdPath, existing + roleSection)
+      }
+    } else {
+      // Remove [kanvas-role] section when clearing role
+      if (existing.includes(marker)) {
+        const startIdx = existing.indexOf(marker)
+        const rest = existing.substring(startIdx + marker.length)
+        const nextSection = rest.search(/\n\[(?!kanvas-role)/)
+        let cleaned: string
+        if (nextSection !== -1) {
+          cleaned = existing.substring(0, startIdx) + rest.substring(nextSection)
+        } else {
+          cleaned = existing.substring(0, startIdx)
+        }
+        // Trim trailing whitespace
+        cleaned = cleaned.replace(/\n+$/, '\n')
+        await window.shellApi.noteWriteFile(claudeMdPath, cleaned)
+      }
+    }
+  } catch {
+    // silently ignore — best-effort injection
+  }
+}
+
 // Phase 3-17: Assign a role to a tile and update badge
 function assignRoleToTile(tile: Tile, roleId: string | undefined): void {
   tile.roleId = roleId
@@ -965,6 +1198,31 @@ function assignRoleToTile(tile: Tile, roleId: string | undefined): void {
       void msg
     }
   }
+  // Phase 3-17b: Inject role system prompt into CLAUDE.md in tile's working directory
+  if (tile.type === 'terminal' && tile.cwd) {
+    const roleForMd = roleId ? roles.find((r) => r.id === roleId) : null
+    injectRoleIntoCLAUDEmd(tile.cwd, roleForMd ?? null)
+  }
+}
+
+// Cmd+number tile jumping — badge helpers
+function showTileNumberBadges(): void {
+  const sortedTiles = [...tiles].sort((a, b) => (a.y * 10000 + a.x) - (b.y * 10000 + b.x))
+  sortedTiles.forEach((tile, i) => {
+    if (i >= 9) return // only 1-9
+    const el = tileElements.get(tile.id)
+    if (!el) return
+    const existing = el.querySelector('.cmd-number-badge')
+    if (existing) return
+    const badge = document.createElement('span')
+    badge.className = 'cmd-number-badge'
+    badge.textContent = String(i + 1)
+    el.appendChild(badge)
+  })
+}
+
+function hideTileNumberBadges(): void {
+  document.querySelectorAll('.cmd-number-badge').forEach(b => b.remove())
 }
 
 // Phase 3-16: Send content to connected tiles (prompt + execute)
@@ -988,6 +1246,7 @@ function sendToConnected(tile: Tile): void {
       const el = tileElements.get(target.id)
       const ta = el?.querySelector('textarea') as HTMLTextAreaElement | null
       if (ta) ta.value = target.noteContent
+      writeNoteToDisk(target)
       scheduleSave()
     }
   }
@@ -1101,10 +1360,13 @@ async function handleCliMethod(method: string, params: Record<string, unknown>):
       const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES[type].w / 2
       const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES[type].h / 2
       const tile = createCanvasTile(type, snapToGrid(cx), snapToGrid(cy))
-      if (typeof params.noteContent === 'string') tile.noteContent = params.noteContent
+      if (typeof params.noteContent === 'string') {
+        tile.noteContent = params.noteContent
+        writeNoteToDisk(tile)
+      }
       if (typeof params.cwd === 'string') tile.cwd = params.cwd
       scheduleSave()
-      return { id: tile.id, type: tile.type }
+      return { id: tile.id, type: tile.type, noteFilePath: tile.noteFilePath }
     }
     case 'tile.focus': {
       const t = tiles.find((x) => x.id === params.id)
@@ -1120,6 +1382,7 @@ async function handleCliMethod(method: string, params: Record<string, unknown>):
       const el = tileElements.get(t.id)
       const ta = el?.querySelector('textarea') as HTMLTextAreaElement | null
       if (ta) ta.value = t.noteContent
+      writeNoteToDisk(t)
       scheduleSave()
       return { ok: true }
     }
@@ -1130,13 +1393,14 @@ async function handleCliMethod(method: string, params: Record<string, unknown>):
       const el = tileElements.get(t.id)
       const ta = el?.querySelector('textarea') as HTMLTextAreaElement | null
       if (ta) ta.value = t.noteContent
+      writeNoteToDisk(t)
       scheduleSave()
       return { ok: true }
     }
     case 'note.read': {
       const t = tiles.find((x) => x.id === params.id)
       if (!t || t.type !== 'note') throw new Error('note not found')
-      return t.noteContent ?? ''
+      return { content: t.noteContent ?? '', filePath: t.noteFilePath ?? null }
     }
     case 'connection.create': {
       const from = String(params.from ?? '')
@@ -1195,6 +1459,59 @@ async function handleCliMethod(method: string, params: Record<string, unknown>):
     }
     default:
       throw new Error(`unknown method: ${method}`)
+  }
+}
+
+// Phase 6b: Simple markdown-to-HTML renderer for note preview
+function simpleMarkdownToHtml(md: string): string {
+  // Escape HTML first
+  let html = md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  // Code blocks (before other transforms to avoid double-processing)
+  html = html.replace(/```[\s\S]*?```/g, (m) => {
+    const code = m.slice(3, -3).replace(/^\w*\n/, '')
+    return `<pre><code>${code}</code></pre>`
+  })
+  // Inline code
+  html = html.replace(/`(.+?)`/g, '<code>$1</code>')
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>')
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>')
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>')
+  // Bold and italic
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
+  // Checkboxes (before unordered lists)
+  html = html.replace(/^- \[x\] (.+)$/gm, '<li class="cb">&#9745; $1</li>')
+  html = html.replace(/^- \[ \] (.+)$/gm, '<li class="cb">&#9744; $1</li>')
+  // Unordered lists
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>')
+  // Links
+  html = html.replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2">$1</a>')
+  // Paragraphs
+  html = html.replace(/\n\n/g, '</p><p>')
+  html = html.replace(/\n/g, '<br>')
+  return `<p>${html}</p>`
+}
+
+// Phase 6: Ensure a note tile has a file path assigned, creating the notes dir if needed
+async function ensureNoteFilePath(tile: Tile): Promise<void> {
+  if (tile.noteFilePath) return
+  const wp = await window.shellApi.getWorkspacePath()
+  if (!wp) return
+  const filePath = `${wp}/.kanvas/notes/${tile.id}.md`
+  tile.noteFilePath = filePath
+  // Write initial content to disk
+  await window.shellApi.noteWriteFile(filePath, tile.noteContent ?? '')
+  scheduleSave()
+}
+
+// Phase 6: Write note content to disk (fire-and-forget helper)
+function writeNoteToDisk(tile: Tile): void {
+  if (tile.noteFilePath && tile.noteContent != null) {
+    window.shellApi.noteWriteFile(tile.noteFilePath, tile.noteContent)
   }
 }
 
@@ -1323,6 +1640,11 @@ function createCanvasTile(
   renderTileElement(tile)
   bringToFront(tile.id)
   logCanvasEvent({ ts: Date.now(), kind: 'tile.create', tileId: tile.id, tileName: tileLabel(tile), payload: { type } })
+
+  // Phase 6: Auto-assign .md file path for new note tiles
+  if (type === 'note') {
+    ensureNoteFilePath(tile)
+  }
 
   // If in fullscreen, make new tile fullscreen and show it
   if (isFullscreen) {
@@ -1783,6 +2105,203 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
     toolbar.appendChild(pathLabel)
     wrapper.appendChild(toolbar)
 
+    // ─── Git branch indicator ───
+    const branchBar = document.createElement('div')
+    branchBar.className = 'git-branch-bar'
+    branchBar.style.cssText = 'padding:4px 8px;font-size:11px;color:var(--text-muted);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;'
+    const branchIcon = document.createElement('span')
+    branchIcon.textContent = '\u2387'
+    branchBar.appendChild(branchIcon)
+    const branchName = document.createElement('span')
+    branchName.textContent = '...'
+    branchBar.appendChild(branchName)
+    wrapper.appendChild(branchBar)
+
+    function refreshBranchDisplay() {
+      window.shellApi.gitExec(['rev-parse', '--abbrev-ref', 'HEAD']).then(r => {
+        if (r.ok && r.output) branchName.textContent = r.output.trim()
+        else branchName.textContent = '(no repo)'
+      }).catch(() => { branchName.textContent = '(no repo)' })
+    }
+    refreshBranchDisplay()
+
+    // ─── Toast helper ───
+    function showToast(msg: string, type: 'success' | 'error') {
+      const existing = wrapper.querySelector('.git-toast')
+      if (existing) existing.remove()
+      const toast = document.createElement('div')
+      toast.className = `git-toast ${type}`
+      toast.textContent = msg
+      wrapper.style.position = 'relative'
+      wrapper.appendChild(toast)
+      setTimeout(() => toast.remove(), 3000)
+    }
+
+    // ─── Git action toolbar ───
+    const gitToolbar = document.createElement('div')
+    gitToolbar.className = 'git-toolbar'
+    wrapper.appendChild(gitToolbar)
+
+    // ─── Commit input area (hidden by default) ───
+    const commitArea = document.createElement('div')
+    commitArea.style.cssText = 'display:none;padding:4px 8px;border-bottom:1px solid var(--border);'
+    const commitInput = document.createElement('input')
+    commitInput.type = 'text'
+    commitInput.placeholder = 'Commit message...'
+    commitInput.className = 'git-inline-input'
+    const commitBtnRow = document.createElement('div')
+    commitBtnRow.style.cssText = 'display:flex;gap:4px;margin-top:4px;'
+    const commitSubmit = document.createElement('button')
+    commitSubmit.textContent = 'Commit'
+    commitSubmit.className = 'git-inline-submit'
+    const commitCancel = document.createElement('button')
+    commitCancel.textContent = 'Cancel'
+    commitCancel.className = 'git-inline-cancel'
+    commitBtnRow.appendChild(commitSubmit)
+    commitBtnRow.appendChild(commitCancel)
+    commitArea.appendChild(commitInput)
+    commitArea.appendChild(commitBtnRow)
+    wrapper.appendChild(commitArea)
+
+    // ─── Branch input area (hidden by default) ───
+    const branchArea = document.createElement('div')
+    branchArea.style.cssText = 'display:none;padding:4px 8px;border-bottom:1px solid var(--border);'
+    const branchInput = document.createElement('input')
+    branchInput.type = 'text'
+    branchInput.placeholder = 'New branch name...'
+    branchInput.className = 'git-inline-input'
+    const branchBtnRow = document.createElement('div')
+    branchBtnRow.style.cssText = 'display:flex;gap:4px;margin-top:4px;'
+    const branchSubmit = document.createElement('button')
+    branchSubmit.textContent = 'Create'
+    branchSubmit.className = 'git-inline-submit'
+    const branchCancel = document.createElement('button')
+    branchCancel.textContent = 'Cancel'
+    branchCancel.className = 'git-inline-cancel'
+    branchBtnRow.appendChild(branchSubmit)
+    branchBtnRow.appendChild(branchCancel)
+    branchArea.appendChild(branchInput)
+    branchArea.appendChild(branchBtnRow)
+    wrapper.appendChild(branchArea)
+
+    // ─── Commit handlers ───
+    commitCancel.addEventListener('click', (e) => {
+      e.stopPropagation()
+      commitArea.style.display = 'none'
+      commitInput.value = ''
+    })
+    commitSubmit.addEventListener('click', async (e) => {
+      e.stopPropagation()
+      const msg = commitInput.value.trim()
+      if (!msg) { commitInput.focus(); return }
+      commitSubmit.textContent = '...'
+      const addResult = await window.shellApi.gitExec(['add', '-A'])
+      if (!addResult.ok) {
+        commitSubmit.textContent = 'Commit'
+        showToast('git add failed: ' + (addResult.error || 'unknown'), 'error')
+        return
+      }
+      const result = await window.shellApi.gitExec(['commit', '-m', msg])
+      commitSubmit.textContent = 'Commit'
+      if (!result.ok) {
+        showToast('Commit failed: ' + (result.error || 'unknown'), 'error')
+      } else {
+        showToast('Committed: ' + msg, 'success')
+        commitArea.style.display = 'none'
+        commitInput.value = ''
+        loadDir(tile.folderPath || '.')
+      }
+    })
+    commitInput.addEventListener('keydown', (e) => {
+      e.stopPropagation()
+      if (e.key === 'Enter') { commitSubmit.click() }
+      if (e.key === 'Escape') { commitCancel.click() }
+    })
+    commitInput.addEventListener('mousedown', (e) => e.stopPropagation())
+
+    // ─── Branch handlers ───
+    branchCancel.addEventListener('click', (e) => {
+      e.stopPropagation()
+      branchArea.style.display = 'none'
+      branchInput.value = ''
+    })
+    branchSubmit.addEventListener('click', async (e) => {
+      e.stopPropagation()
+      const name = branchInput.value.trim()
+      if (!name) { branchInput.focus(); return }
+      branchSubmit.textContent = '...'
+      const result = await window.shellApi.gitExec(['checkout', '-b', name])
+      branchSubmit.textContent = 'Create'
+      if (!result.ok) {
+        showToast('Branch failed: ' + (result.error || 'unknown'), 'error')
+      } else {
+        showToast('Switched to branch: ' + name, 'success')
+        branchArea.style.display = 'none'
+        branchInput.value = ''
+        refreshBranchDisplay()
+      }
+    })
+    branchInput.addEventListener('keydown', (e) => {
+      e.stopPropagation()
+      if (e.key === 'Enter') { branchSubmit.click() }
+      if (e.key === 'Escape') { branchCancel.click() }
+    })
+    branchInput.addEventListener('mousedown', (e) => e.stopPropagation())
+
+    // ─── Build git action buttons ───
+    const gitActions: Array<{ label: string; cmd: string[] | null; confirm: boolean }> = [
+      { label: '\u2193 Pull',  cmd: ['pull'],            confirm: false },
+      { label: '\u2191 Push',  cmd: ['push'],            confirm: true },
+      { label: '\u2713 Commit', cmd: null,               confirm: false },
+      { label: '\u2295 Branch', cmd: null,               confirm: false },
+      { label: '\u27F2 Stash', cmd: ['stash'],           confirm: false },
+      { label: '\u27F3 Fetch', cmd: ['fetch', '--all'],  confirm: false },
+    ]
+
+    for (const action of gitActions) {
+      const btn = document.createElement('button')
+      btn.textContent = action.label
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation()
+
+        if (action.label === '\u2713 Commit') {
+          const isVisible = commitArea.style.display !== 'none'
+          commitArea.style.display = isVisible ? 'none' : 'block'
+          branchArea.style.display = 'none'
+          if (!isVisible) setTimeout(() => commitInput.focus(), 50)
+          return
+        }
+
+        if (action.label === '\u2295 Branch') {
+          const isVisible = branchArea.style.display !== 'none'
+          branchArea.style.display = isVisible ? 'none' : 'block'
+          commitArea.style.display = 'none'
+          if (!isVisible) setTimeout(() => branchInput.focus(), 50)
+          return
+        }
+
+        if (action.confirm) {
+          const ok = await window.shellApi.showConfirmDialog({ message: `Run git ${action.cmd!.join(' ')}?` })
+          if (!ok) return
+        }
+
+        btn.classList.add('git-btn-busy')
+        const origLabel = btn.textContent
+        btn.textContent = '...'
+        const result = await window.shellApi.gitExec(action.cmd!)
+        btn.textContent = origLabel
+        btn.classList.remove('git-btn-busy')
+        if (!result.ok) {
+          showToast(`git ${action.cmd!.join(' ')} failed: ${result.error || 'unknown'}`, 'error')
+        } else {
+          showToast(`git ${action.cmd!.join(' ')} done`, 'success')
+          refreshBranchDisplay()
+          loadDir(tile.folderPath || '.')
+        }
+      })
+      gitToolbar.appendChild(btn)
+    }
+
     const list = document.createElement('div')
     list.style.cssText = 'padding:4px 0;'
     wrapper.appendChild(list)
@@ -1892,11 +2411,41 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
   }
 
   if (tile.type === 'note') {
-    // Phase 3-14: Sticky Note — textarea bound to tile.noteContent, persisted via canvas state
-    // If tile.filePath is set, load/save from disk; otherwise keep in canvas state
+    // Phase 6: Notes as real .md files on disk (Maestri-style)
+    // Each note is backed by a .md file at {workspace}/.kanvas/notes/{tile.id}.md
+
+    // Phase 6b: Raw/Formatted toggle button (positioned in path bar area)
+    const toggleBtn = document.createElement('button')
+    toggleBtn.className = 'note-view-toggle'
+    toggleBtn.textContent = '\u{1F441}'  // eye emoji
+    toggleBtn.title = 'Show formatted'
+    toggleBtn.style.cssText = `
+      position: absolute; top: 2px; right: 4px; z-index: 5;
+      background: none; border: none; cursor: pointer; color: var(--text-muted, #888);
+      font-size: 13px; width: 20px; height: 20px; display: flex;
+      align-items: center; justify-content: center; border-radius: 3px; padding: 0;
+    `
+    toggleBtn.addEventListener('mouseenter', () => { toggleBtn.style.background = 'var(--bg-hover, #333)' })
+    toggleBtn.addEventListener('mouseleave', () => { toggleBtn.style.background = 'none' })
+
+    // File path indicator (above textarea) — with toggle button
+    const pathBar = document.createElement('div')
+    pathBar.style.cssText = `
+      padding: 2px 12px; padding-right: 28px; font-size: 10px; color: var(--text-muted, #666);
+      background: var(--bg-panel, #1e1e1e); border-bottom: 1px solid #333;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      flex-shrink: 0; font-family: 'SF Mono', 'Fira Code', monospace;
+      opacity: 0.7; position: relative;
+    `
+    const pathBarText = document.createElement('span')
+    pathBarText.textContent = tile.noteFilePath ? tile.noteFilePath.replace(/^.*\/\.kanvas\/notes\//, '.kanvas/notes/') : ''
+    pathBar.appendChild(pathBarText)
+    pathBar.appendChild(toggleBtn)
+    container.appendChild(pathBar)
+
     const textarea = document.createElement('textarea')
     textarea.style.cssText = `
-      width: 100%; height: 100%; background: var(--bg-panel); color: var(--text-primary);
+      width: 100%; flex: 1; background: var(--bg-panel); color: var(--text-primary);
       border: none; outline: none; resize: none; padding: 12px;
       font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px;
       line-height: 1.6;
@@ -1905,10 +2454,53 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
     textarea.addEventListener('mousedown', (e) => e.stopPropagation())
     container.appendChild(textarea)
 
-    // Hydrate
-    textarea.value = tile.noteContent ?? ''
+    // Phase 6b: Preview div for formatted markdown view
+    const preview = document.createElement('div')
+    preview.className = 'note-preview'
+    preview.style.cssText = `
+      display: none; padding: 12px; overflow: auto; flex: 1;
+      font-size: 13px; line-height: 1.6; color: var(--text-primary);
+      background: var(--bg-panel);
+    `
+    preview.addEventListener('mousedown', (e) => e.stopPropagation())
+    container.appendChild(preview)
 
-    // Save on input (debounced)
+    // Phase 6b: Toggle between raw/formatted view
+    let rawMode = true
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      rawMode = !rawMode
+      if (rawMode) {
+        textarea.style.display = ''
+        preview.style.display = 'none'
+        toggleBtn.textContent = '\u{1F441}'  // eye emoji
+        toggleBtn.title = 'Show formatted'
+      } else {
+        preview.innerHTML = simpleMarkdownToHtml(textarea.value)
+        textarea.style.display = 'none'
+        preview.style.display = ''
+        toggleBtn.textContent = '\u{270F}'  // pencil emoji
+        toggleBtn.title = 'Show raw'
+      }
+    })
+
+    // Hydrate: if noteFilePath exists, load from disk; otherwise use in-memory content
+    if (tile.noteFilePath) {
+      window.shellApi.noteReadFile(tile.noteFilePath).then((content) => {
+        tile.noteContent = content
+        textarea.value = content
+      }).catch(() => {
+        textarea.value = tile.noteContent ?? ''
+      })
+    } else {
+      textarea.value = tile.noteContent ?? ''
+      // Assign file path for new notes (will be written on first edit)
+      ensureNoteFilePath(tile).then(() => {
+        pathBarText.textContent = tile.noteFilePath ? tile.noteFilePath.replace(/^.*\/\.kanvas\/notes\//, '.kanvas/notes/') : ''
+      })
+    }
+
+    // Save on input (debounced) — writes to both canvas state and disk
     let saveTimer: ReturnType<typeof setTimeout> | null = null
     textarea.addEventListener('input', () => {
       if (saveTimer) clearTimeout(saveTimer)
@@ -1916,6 +2508,10 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
         tile.noteContent = textarea.value
         scheduleSave()
         notifyNoteChanged(tile.id, textarea.value)
+        // Write to disk
+        if (tile.noteFilePath) {
+          window.shellApi.noteWriteFile(tile.noteFilePath, textarea.value)
+        }
       }, 300)
     })
     return
@@ -2378,6 +2974,7 @@ function setupCanvasInteractions(): void {
     const target = e.target as HTMLElement
     if (target.closest('.canvas-tile')) return
     if (target.closest('.quick-create-menu')) return
+    if (target.closest('#tile-toolbar-strip')) return
     if (target.closest('#new-tile-fab')) return
     if (target.closest('#new-tile-menu')) return
     if (target.closest('#tile-ctx-menu')) return

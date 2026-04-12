@@ -167,5 +167,8 @@ contextBridge.exposeInMainWorld('shellApi', {
   onTilesCloseAll: (cb: () => void) => {
     ipcRenderer.on('tiles:close-all', cb)
     return () => ipcRenderer.removeListener('tiles:close-all', cb)
-  }
+  },
+
+  noteReadFile: (filePath: string) => ipcRenderer.invoke('note:read-file', filePath),
+  noteWriteFile: (filePath: string, content: string) => ipcRenderer.invoke('note:write-file', { filePath, content }),
 })

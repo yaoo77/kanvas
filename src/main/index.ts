@@ -286,6 +286,20 @@ function registerShellIpc(): void {
     writeFileSync(join(dir, 'canvas-state.json'), JSON.stringify(state))
   })
 
+  // Phase 6: Note file operations — read/write .md files on disk
+  ipcMain.handle('note:read-file', async (_e, filePath: string) => {
+    const { readFileSync, existsSync } = require('fs')
+    if (existsSync(filePath)) return readFileSync(filePath, 'utf-8')
+    return ''
+  })
+
+  ipcMain.handle('note:write-file', async (_e, { filePath, content }: { filePath: string; content: string }) => {
+    const { writeFileSync, mkdirSync } = require('fs')
+    const { dirname } = require('path')
+    mkdirSync(dirname(filePath), { recursive: true })
+    writeFileSync(filePath, content, 'utf-8')
+  })
+
   // Phase 4-21: Floors — create/list/remove git worktrees and snapshot canvas state
   ipcMain.handle('floors:list', async () => {
     const { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } = require('fs')
