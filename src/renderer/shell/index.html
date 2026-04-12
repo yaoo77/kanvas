@@ -9,9 +9,9 @@
     :root {
       --bg-base: #121212;
       --bg-panel: #1a1a1a;
-      --bg-surface: var(--bg-surface);
+      --bg-surface: #1e1e1e;
       --bg-elevated: #252526;
-      --bg-hover: var(--border);
+      --bg-hover: #333;
       --bg-active: #3a3a3a;
       --bg-overlay: rgba(30, 30, 30, 0.9);
       --bg-overlay-opaque: rgba(30, 30, 30, 0.95);
@@ -20,7 +20,7 @@
       --text-muted: #888;
       --text-dim: #666;
       --text-faint: #555;
-      --border: var(--border);
+      --border: #333;
       --border-strong: #444;
       --border-subtle: #444;
       --accent: #4a9eff;
@@ -69,19 +69,23 @@
     /* Tile layer */
     #tile-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
 
-    /* Canvas tiles */
+    /* Canvas tiles (Phase 2-9: embedded visual language) */
     .canvas-tile {
       position: absolute; pointer-events: auto; display: flex; flex-direction: column;
-      border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg-surface);
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-surface);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.3);
+      transition: box-shadow 150ms ease, border-color 150ms ease;
     }
-    .canvas-tile.focused { border-color: #4a9eff; box-shadow: 0 2px 12px rgba(74,158,255,0.2); }
-    .canvas-tile.selected { border-color: #4a9eff; }
+    .canvas-tile.focused {
+      border-color: var(--accent);
+      box-shadow: 0 14px 30px rgba(0,0,0,0.45), 0 2px 12px rgba(74,158,255,0.28);
+    }
+    .canvas-tile.selected { border-color: var(--accent); }
 
     /* Tile titlebar */
     .tile-title-bar {
       height: 28px; display: flex; align-items: center; padding: 0 6px; gap: 4px;
-      background: #252526; cursor: grab; user-select: none; flex-shrink: 0;
+      background: var(--bg-elevated); cursor: grab; user-select: none; flex-shrink: 0;
     }
     .tile-title-bar:active { cursor: grabbing; }
     .tile-title-text { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -218,6 +222,25 @@
     }
     #tile-ctx-menu button:hover { background: #3a3a3a; }
     #tile-ctx-menu .divider { height: 1px; background: #444; margin: 4px 0; }
+
+    /* Phase 2-11: right sidebar (canvas-level terminal) */
+    #panel-right { flex: 0 0 360px; background: var(--bg-surface); border-left: 1px solid var(--border); overflow: hidden; display: none; flex-direction: column; }
+    #panel-right.open { display: flex; }
+    #right-toggle {
+      position: fixed; top: 8px; right: 52px; z-index: 60;
+      background: none; border: none; color: var(--text-muted);
+      width: 28px; height: 28px; border-radius: 4px; cursor: pointer;
+      font-size: 14px; -webkit-app-region: no-drag;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #right-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+    #right-toggle.active { background: var(--bg-active); color: var(--text-primary); }
+    #right-terminal-host { flex: 1; overflow: hidden; }
+    #right-terminal-host webview { width: 100%; height: 100%; border: none; }
+    #right-terminal-header {
+      padding: 6px 10px; font-size: 11px; color: var(--text-muted);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -253,9 +276,14 @@
         <button id="zoom-in" title="Zoom In">+</button>
       </div>
     </div>
+    <div id="panel-right">
+      <div id="right-terminal-header">Canvas Terminal</div>
+      <div id="right-terminal-host"></div>
+    </div>
     <div id="tile-rename-popover"><input type="text" id="tile-rename-input" /></div>
     <div id="tile-ctx-menu"></div>
   </div>
+  <button type="button" id="right-toggle" title="Toggle Canvas Terminal">⎋</button>
 
   <div id="settings-overlay">
     <div id="settings-backdrop"></div>

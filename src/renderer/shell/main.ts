@@ -216,6 +216,43 @@ async function init(): Promise<void> {
     }
   })
 
+  // Phase 2-11: Canvas-level right sidebar terminal (Cmd+J toggles)
+  const rightPanel = document.getElementById('panel-right')!
+  const rightToggle = document.getElementById('right-toggle')!
+  let rightTerminalCreated = false
+  const openRightPanel = () => {
+    rightPanel.classList.add('open')
+    rightToggle.classList.add('active')
+    if (!rightTerminalCreated) {
+      const host = document.getElementById('right-terminal-host')!
+      const config = viewConfig['terminalTile']
+      if (config) {
+        const wv = document.createElement('webview')
+        wv.setAttribute('src', config.src)
+        wv.setAttribute('preload', config.preload)
+        wv.setAttribute('webpreferences', 'contextIsolation=yes')
+        wv.style.cssText = 'width:100%;height:100%;border:none;'
+        host.appendChild(wv)
+        rightTerminalCreated = true
+      }
+    }
+  }
+  const closeRightPanel = () => {
+    rightPanel.classList.remove('open')
+    rightToggle.classList.remove('active')
+  }
+  rightToggle.addEventListener('click', () => {
+    if (rightPanel.classList.contains('open')) closeRightPanel()
+    else openRightPanel()
+  })
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'j' || e.key === 'J')) {
+      e.preventDefault()
+      if (rightPanel.classList.contains('open')) closeRightPanel()
+      else openRightPanel()
+    }
+  })
+
   // Nav resize
   setupNavResize()
 
@@ -333,12 +370,19 @@ async function loadCanvasState(): Promise<void> {
   try {
     const raw = await window.shellApi.canvasLoadState()
     if (!raw || typeof raw !== 'object') return
-    const state = raw as CanvasState
+    const state = raw as CanvasState & { centerX?: number; centerY?: number }
     if (Array.isArray(state.tiles)) {
-      panX = state.panX ?? 0
-      panY = state.panY ?? 0
       zoom = state.zoom ?? 1
       nextZ = state.nextZ ?? 1
+      // Phase 2-8: prefer centerpoint-based viewport restoration if present
+      if (typeof state.centerX === 'number' && typeof state.centerY === 'number') {
+        const rect = panelViewer.getBoundingClientRect()
+        panX = rect.width / 2 - state.centerX * zoom
+        panY = rect.height / 2 - state.centerY * zoom
+      } else {
+        panX = state.panX ?? 0
+        panY = state.panY ?? 0
+      }
       for (const t of state.tiles) {
         tiles.push(t)
         renderTileElement(t)
@@ -351,7 +395,13 @@ async function loadCanvasState(): Promise<void> {
 function scheduleSave(): void {
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(() => {
-    const state: CanvasState = { panX, panY, zoom, tiles, nextZ }
+    // Phase 2-8: save centerpoint so viewport survives window resize
+    const rect = panelViewer.getBoundingClientRect()
+    const centerX = (rect.width / 2 - panX) / zoom
+    const centerY = (rect.height / 2 - panY) / zoom
+    const state: CanvasState & { centerX: number; centerY: number } = {
+      panX, panY, zoom, tiles, nextZ, centerX, centerY,
+    }
     window.shellApi.canvasSaveState(state)
   }, 500)
 }
@@ -374,14 +424,36 @@ function drawGrid(): void {
   const majorStep = 80 * zoom // every 4th cell
   if (step < 4) return
 
+  // Phase 2b-32: fade dots as we zoom out
+  const zoomFade = Math.max(0, Math.min(1, (zoom - 0.4) / 0.3))
+  if (zoomFade <= 0) return
+
   const dotOffX = ((panX % step) + step) % step
   const dotOffY = ((panY % step) + step) % step
   const dotSize = Math.max(1, 1.5 * zoom)
 
+  // Phase 2b-32: compute tile cutout rects in screen space to skip dots under tiles
+  const cutouts: Array<[number, number, number, number]> = []
+  for (const t of tiles) {
+    const sx = t.x * zoom + panX
+    const sy = t.y * zoom + panY
+    const sw = t.width * zoom
+    const sh = t.height * zoom
+    if (sx + sw < 0 || sy + sh < 0 || sx > w || sy > h) continue
+    cutouts.push([sx, sy, sx + sw, sy + sh])
+  }
+  const isCutout = (x: number, y: number): boolean => {
+    for (const [x1, y1, x2, y2] of cutouts) {
+      if (x >= x1 && x <= x2 && y >= y1 && y <= y2) return true
+    }
+    return false
+  }
+
   // Minor dots
-  gridCtx.fillStyle = 'rgba(255,255,255,0.22)'
+  gridCtx.fillStyle = `rgba(255,255,255,${0.22 * zoomFade})`
   for (let x = dotOffX; x <= w; x += step) {
     for (let y = dotOffY; y <= h; y += step) {
+      if (isCutout(x, y)) continue
       gridCtx.fillRect(Math.round(x), Math.round(y), dotSize, dotSize)
     }
   }
@@ -389,9 +461,10 @@ function drawGrid(): void {
   // Major dots
   const majOffX = ((panX % majorStep) + majorStep) % majorStep
   const majOffY = ((panY % majorStep) + majorStep) % majorStep
-  gridCtx.fillStyle = 'rgba(255,255,255,0.40)'
+  gridCtx.fillStyle = `rgba(255,255,255,${0.40 * zoomFade})`
   for (let x = majOffX; x <= w; x += majorStep) {
     for (let y = majOffY; y <= h; y += majorStep) {
+      if (isCutout(x, y)) continue
       gridCtx.fillRect(Math.round(x), Math.round(y), dotSize, dotSize)
     }
   }
@@ -1097,6 +1170,7 @@ function setupTileDrag(titlebar: HTMLDivElement, tile: Tile): void {
         el.style.left = `${tile.x}px`
         el.style.top = `${tile.y}px`
       }
+      drawGrid()
     }
 
     const onUp = () => {
@@ -1179,6 +1253,7 @@ function startResize(e: MouseEvent, tile: Tile, dir: ResizeDir): void {
 
     const el = tileElements.get(tile.id)
     if (el) applyTilePosition(el, tile)
+    drawGrid()
   }
 
   const onUp = () => {
