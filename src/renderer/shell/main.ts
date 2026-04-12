@@ -1391,11 +1391,13 @@ function bringToFront(id: string): void {
 
 function updateTileFocusStyles(): void {
   for (const [id, el] of tileElements) {
+    const isFocused = id === focusedTileId
+    el.classList.toggle('focused', isFocused)
     const titlebar = el.querySelector('.tile-titlebar') as HTMLDivElement | null
     if (titlebar) {
-      titlebar.style.background = id === focusedTileId ? '#2a2a2a' : '#1e1e1e'
+      titlebar.style.background = isFocused ? '#2a2a2a' : '#1e1e1e'
     }
-    el.style.boxShadow = id === focusedTileId
+    el.style.boxShadow = isFocused
       ? '0 0 0 1px #4a9eff, 0 4px 20px rgba(0,0,0,0.5)'
       : '0 0 0 1px #333, 0 2px 10px rgba(0,0,0,0.3)'
   }
