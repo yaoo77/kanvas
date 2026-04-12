@@ -909,7 +909,7 @@ function assignRoleToTile(tile: Tile, roleId: string | undefined): void {
           `color:${role.color}`,
           'user-select:none',
         ].join(';')
-        const titlebar = el.querySelector('.tile-title-bar')
+        const titlebar = el.querySelector('.tile-titlebar')
         const titleText = titlebar?.querySelector('.tile-title-text')
         if (titleText && titlebar) {
           titlebar.insertBefore(badge, titleText)

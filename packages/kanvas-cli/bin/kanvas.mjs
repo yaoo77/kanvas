@@ -30,17 +30,33 @@ async function request(method, params = {}) {
   return new Promise((resolve, reject) => {
     const client = net.createConnection(SOCK)
     let buf = ''
-    client.on('data', (d) => { buf += d.toString() })
-    client.on('end', () => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
       try {
         const res = JSON.parse(buf)
         if (res.error) reject(new Error(res.error))
         else resolve(res.result)
-      } catch (e) { reject(e) }
+      } catch (e) { reject(new Error(`bad response: ${buf.slice(0, 200)}`)) }
+      try { client.destroy() } catch {}
+    }
+    client.on('data', (d) => {
+      buf += d.toString()
+      // Try to parse early once we have a complete JSON object
+      try {
+        JSON.parse(buf)
+        finish()
+      } catch {}
     })
-    client.on('error', (e) => reject(e))
-    client.write(JSON.stringify({ method, params }) + '\n')
-    client.end()
+    client.on('end', finish)
+    client.on('error', (e) => { if (!done) { done = true; reject(e) } })
+    client.on('connect', () => {
+      client.write(JSON.stringify({ method, params }) + '\n')
+    })
+    setTimeout(() => {
+      if (!done) { done = true; client.destroy(); reject(new Error('timeout')) }
+    }, 10000)
   })
 }
 
