@@ -202,6 +202,20 @@ async function init(): Promise<void> {
     }
   })
 
+  // Phase 1b-30: Theme system — load pref and apply
+  const savedTheme = (await window.shellApi.getPref('theme') as 'dark' | 'light' | undefined) ?? 'dark'
+  document.body.setAttribute('data-theme', savedTheme)
+  // Cmd+Shift+T toggles theme
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 't' || e.key === 'T')) {
+      e.preventDefault()
+      const cur = document.body.getAttribute('data-theme') ?? 'dark'
+      const next = cur === 'dark' ? 'light' : 'dark'
+      document.body.setAttribute('data-theme', next)
+      window.shellApi.setPref('theme', next)
+    }
+  })
+
   // Nav resize
   setupNavResize()
 
