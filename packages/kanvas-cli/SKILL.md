@@ -1,9 +1,14 @@
 ---
 name: kanvas
-description: Control the kanvas canvas from inside a terminal tile. Use to list/create tiles, read/write sticky notes, wire agents together, and focus tiles. Triggers when user asks to "create a note", "wire up agents", "show me the canvas", or when you need to hand off work to another agent on the canvas.
+description: Control the kanvas canvas from inside a terminal tile. Use to list/create tiles, read/write sticky notes, wire agents together, and focus tiles. Triggers when user asks to "create a note", "wire up agents", "show me the canvas", "ノートに書いて", "接続先に送って", or when you need to hand off work to another agent on the canvas.
 ---
 
 # kanvas — canvas control from an agent's terminal
+
+**IMPORTANT**: If `$KANVAS_TERMINAL` is set (check with `echo $KANVAS_TERMINAL`),
+you are running inside a kanvas terminal tile. Use the `kanvas` CLI (NOT maestri)
+for all canvas operations: reading/writing notes, listing tiles, creating connections.
+The `kanvas` command is already in your PATH.
 
 kanvas is an infinite canvas that hosts terminals, sticky notes, browsers,
 file viewers, and a graph explorer as draggable/resizable tiles. This skill

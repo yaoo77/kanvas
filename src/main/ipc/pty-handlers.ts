@@ -99,6 +99,7 @@ export function registerPtyHandlers(): void {
         BROWSER: browserScript,
         PATH: kanvasCliBin + ':' + kanvasBin + ':' + (process.env.PATH || ''),
         KANVAS_SOCKET: join(homedir(), '.kanvas', 'cli.sock'),
+        KANVAS_TERMINAL: '1',
       } as Record<string, string>
     })
 
