@@ -1245,7 +1245,15 @@ function completeDraftingTo(toId: string): void {
   connections.push(conn)
   cancelDrafting()
   logCanvasEvent({ ts: Date.now(), kind: 'connection.create', payload: { from: conn.from, to: conn.to } })
+  updateAllConnBadges()
   scheduleSave()
+}
+
+function updateAllConnBadges(): void {
+  for (const [, el] of tileElements) {
+    const fn = (el as any)._updateConnBadge
+    if (typeof fn === 'function') fn()
+  }
 }
 
 // ─── Viewport helpers ─────────────────────────────────────────────────
@@ -1525,6 +1533,48 @@ function renderTileElement(tile: Tile): void {
     container.appendChild(titlebar)
     container.appendChild(content)
   }
+
+  // Phase 6: Per-tile contextual toolbar (Maestri-style)
+  const toolbar = document.createElement('div')
+  toolbar.className = 'tile-toolbar'
+  toolbar.addEventListener('mousedown', (e) => e.stopPropagation())
+  const tbBtn = (icon: string, title: string, onClick: () => void) => {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.textContent = icon
+    b.title = title
+    b.addEventListener('click', (e) => { e.stopPropagation(); onClick() })
+    return b
+  }
+  toolbar.appendChild(tbBtn('✎', 'Rename', () => {
+    const rect = container.getBoundingClientRect()
+    openTileRenamePopover(tile, rect.left + 20, rect.top + 40)
+  }))
+  const connBtn = tbBtn('⑃', 'Connect (⌘L)', () => startDrafting(tile.id))
+  // Connection count badge
+  const updateConnBadge = () => {
+    const count = connections.filter((c) => c.from === tile.id || c.to === tile.id).length
+    const existing = connBtn.querySelector('.conn-badge')
+    if (existing) existing.remove()
+    if (count > 0) {
+      const badge = document.createElement('span')
+      badge.className = 'conn-badge'
+      badge.textContent = String(count)
+      connBtn.appendChild(badge)
+    }
+  }
+  toolbar.appendChild(connBtn)
+  const divider = document.createElement('div')
+  divider.className = 'tb-divider'
+  toolbar.appendChild(divider)
+  if (tile.type === 'terminal') {
+    toolbar.appendChild(tbBtn('⊕', 'Duplicate', () => duplicateTile(tile)))
+  }
+  toolbar.appendChild(tbBtn('✕', 'Close', () => removeTile(tile.id)))
+  container.appendChild(toolbar)
+  // Store badge updater for later calls
+  ;(container as any)._updateConnBadge = updateConnBadge
+  updateConnBadge()
 
   // Resize handles (8 directions)
   createResizeHandles(container, tile)
