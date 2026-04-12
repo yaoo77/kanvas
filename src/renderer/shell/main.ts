@@ -423,18 +423,25 @@ async function init(): Promise<void> {
     }
   })
   // Click on tile while drafting completes the connection
-  panelViewer.addEventListener('click', (e) => {
+  // Use document-level capture to catch clicks even inside tile content areas
+  // that call stopPropagation (filetree, note textarea, etc.)
+  document.addEventListener('mousedown', (e) => {
     if (!draftingConnection) return
     const target = (e.target as HTMLElement).closest('.canvas-tile') as HTMLElement | null
     if (target) {
-      const id = target.getAttribute('data-tile-id')
+      const id = target.dataset.tileId
       if (id) {
+        e.preventDefault()
+        e.stopPropagation()
         completeDraftingTo(id)
         return
       }
     }
-    cancelDrafting()
-  })
+    // Click on empty canvas or nav → cancel
+    if (!(e.target as HTMLElement).closest('.quick-create-menu')) {
+      cancelDrafting()
+    }
+  }, true)  // capture phase
 
   // Phase 2-11: Canvas-level right sidebar terminal (Cmd+J toggles)
   const rightPanel = document.getElementById('panel-right')!

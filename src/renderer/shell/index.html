@@ -70,12 +70,12 @@
     #tile-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
 
     /* Phase 3-15: Connection layer (SVG overlay, above grid, below tiles) */
-    #conn-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+    #conn-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: visible; }
     #conn-layer .conn-line { fill: none; stroke: rgba(74,158,255,0.65); stroke-width: 2.5; pointer-events: stroke; cursor: pointer; }
     #conn-layer .conn-line.drafting { stroke-dasharray: 6 6; stroke: rgba(255,255,255,0.5); }
 
     /* Phase 3-19: Drawing layer (free-draw shapes) */
-    #draw-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+    #draw-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: visible; }
     body.draw-mode #draw-layer { pointer-events: auto; cursor: crosshair; }
     body.draw-mode #tile-layer { pointer-events: none; }
     #draw-layer .shape { fill: none; stroke: rgba(255,200,80,0.9); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; pointer-events: stroke; cursor: pointer; }
