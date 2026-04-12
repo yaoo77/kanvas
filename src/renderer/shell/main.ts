@@ -1750,9 +1750,9 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
           const fullPath = `${dir}/${entry.name}`
           const relPath = fullPath.replace(/^\.\//, '')
           const badge = gitStatus[relPath] || ''
-          const icon = entry.isDirectory ? '📁' : '📄'
+          const icon = entry.isDir ? '📁' : '📄'
           const row = createFileRow(entry.name, icon, badge, () => {
-            if (entry.isDirectory) {
+            if (entry.isDir) {
               tile.folderPath = fullPath
               scheduleSave()
               loadDir(fullPath)
