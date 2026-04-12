@@ -31,6 +31,8 @@ declare global {
       showContextMenu: (items: Array<{ label: string; id: string }>) => Promise<string | null>
       selectFile: (path: string) => void
       openExternal: (url: string) => void
+      readDir: (path: string) => Promise<Array<{ name: string; isDirectory: boolean }>>
+      gitExec: (args: string[]) => Promise<{ ok: boolean; output?: string; error?: string }>
       rolesLoad: () => Promise<AgentRole[]>
       rolesSave: (roles: AgentRole[]) => Promise<void>
       onCliRequest: (cb: (id: string, method: string, params: unknown) => void) => () => void
@@ -64,7 +66,7 @@ interface ViewConfig {
 
 interface Tile {
   id: string
-  type: 'terminal' | 'graph' | 'browser' | 'viewer' | 'file' | 'note'
+  type: 'terminal' | 'graph' | 'browser' | 'viewer' | 'file' | 'note' | 'filetree'
   x: number
   y: number
   width: number
@@ -144,6 +146,7 @@ const DEFAULT_SIZES: Record<Tile['type'], { w: number; h: number }> = {
   viewer:   { w: 700, h: 500 },
   file:     { w: 700, h: 500 },
   note:     { w: 400, h: 300 },
+  filetree: { w: 320, h: 500 },
 }
 
 // Phase 1b-26: Remember last size per type (updated when a tile is resized)
@@ -550,8 +553,13 @@ async function init(): Promise<void> {
       const rect = panelViewer.getBoundingClientRect()
       const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.terminal.w / 2
       const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.terminal.h / 2
-      if (kind === 'terminal' || kind === 'note' || kind === 'browser') {
-        createCanvasTile(kind, snapToGrid(cx), snapToGrid(cy))
+      if (kind === 'terminal' || kind === 'note' || kind === 'browser' || kind === 'filetree') {
+        const tile = createCanvasTile(kind, snapToGrid(cx), snapToGrid(cy))
+        if (kind === 'filetree') {
+          window.shellApi.getWorkspacePath().then((wp) => {
+            if (wp) { tile.folderPath = wp; scheduleSave() }
+          })
+        }
       }
       fabMenu.classList.remove('open')
     })
@@ -1540,6 +1548,7 @@ function tileIcon(type: Tile['type']): string {
     case 'viewer':   return '\u25a1'  // □
     case 'file':     return '\u25a0'  // ■
     case 'note':     return '\u270e'  // ✎
+    case 'filetree': return '\u2630'  // ☰
   }
 }
 
@@ -1559,6 +1568,7 @@ function tileLabel(tile: Tile): string {
     case 'viewer':   label = 'Viewer'; break
     case 'file':     label = tile.filePath?.split('/').pop() || 'File'; break
     case 'note':     label = `Note ${++noteCounter}`; break
+    case 'filetree': label = tile.folderPath?.split('/').pop() || 'Files'; break
     default:         label = tile.type
   }
   tileLabelMap.set(tile.id, label)
@@ -1678,6 +1688,129 @@ function openTileContextMenu(tile: Tile, clientX: number, clientY: number): void
 // ─── Tile webview creation ───────────────────────────────────────────
 
 function createTileWebview(tile: Tile, container: HTMLDivElement): void {
+  // Phase 5-12: File Tree Node — inline DOM file browser with git badges
+  if (tile.type === 'filetree') {
+    const wrapper = document.createElement('div')
+    wrapper.style.cssText = 'width:100%;height:100%;overflow:auto;background:var(--bg-panel);color:var(--text-primary);font-size:12px;'
+    wrapper.addEventListener('mousedown', (e) => e.stopPropagation())
+    container.appendChild(wrapper)
+
+    const toolbar = document.createElement('div')
+    toolbar.style.cssText = 'padding:6px 8px;display:flex;gap:4px;border-bottom:1px solid var(--border);align-items:center;'
+    const pathLabel = document.createElement('span')
+    pathLabel.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted);font-size:11px;'
+    pathLabel.textContent = tile.folderPath?.split('/').pop() ?? 'Files'
+    toolbar.appendChild(pathLabel)
+    wrapper.appendChild(toolbar)
+
+    const list = document.createElement('div')
+    list.style.cssText = 'padding:4px 0;'
+    wrapper.appendChild(list)
+
+    const folderPath = tile.folderPath || '.'
+
+    async function loadDir(dir: string) {
+      list.innerHTML = ''
+      pathLabel.textContent = dir.split('/').pop() || dir
+      try {
+        const entries = await window.shellApi.readDir(dir)
+        // Get git status for badge display
+        let gitStatus: Record<string, string> = {}
+        try {
+          const gitResult = await window.shellApi.gitExec(['status', '--porcelain', '-uall', dir])
+          if (gitResult?.ok && gitResult.output) {
+            for (const line of gitResult.output.split('\n')) {
+              if (line.length < 4) continue
+              const status = line.slice(0, 2).trim()
+              const fp = line.slice(3).trim()
+              gitStatus[fp] = status
+            }
+          }
+        } catch {}
+
+        // Parent (..) entry
+        if (dir !== '/' && dir !== '.') {
+          const row = createFileRow('..', '📁', '', () => {
+            const parent = dir.split('/').slice(0, -1).join('/') || '/'
+            tile.folderPath = parent
+            scheduleSave()
+            loadDir(parent)
+          })
+          list.appendChild(row)
+        }
+
+        // Sort: folders first, then files
+        const sorted = [...entries].sort((a: any, b: any) => {
+          if (a.isDirectory && !b.isDirectory) return -1
+          if (!a.isDirectory && b.isDirectory) return 1
+          return a.name.localeCompare(b.name)
+        })
+
+        for (const entry of sorted as any[]) {
+          const fullPath = `${dir}/${entry.name}`
+          const relPath = fullPath.replace(/^\.\//, '')
+          const badge = gitStatus[relPath] || ''
+          const icon = entry.isDirectory ? '📁' : '📄'
+          const row = createFileRow(entry.name, icon, badge, () => {
+            if (entry.isDirectory) {
+              tile.folderPath = fullPath
+              scheduleSave()
+              loadDir(fullPath)
+            } else {
+              // Click file → open in viewer
+              window.shellApi.selectFile(fullPath)
+            }
+          }, fullPath)
+          list.appendChild(row)
+        }
+      } catch (err) {
+        list.textContent = `Error: ${(err as Error).message}`
+      }
+    }
+
+    function createFileRow(name: string, icon: string, badge: string, onClick: () => void, dragPath?: string): HTMLDivElement {
+      const row = document.createElement('div')
+      row.style.cssText = 'padding:3px 8px;display:flex;align-items:center;gap:6px;cursor:pointer;border-radius:3px;'
+      row.addEventListener('mouseenter', () => { row.style.background = 'var(--bg-hover)' })
+      row.addEventListener('mouseleave', () => { row.style.background = '' })
+      row.addEventListener('click', onClick)
+
+      // Drag file path to terminal
+      if (dragPath) {
+        row.draggable = true
+        row.addEventListener('dragstart', (e) => {
+          e.dataTransfer?.setData('text/plain', dragPath)
+        })
+      }
+
+      const iconEl = document.createElement('span')
+      iconEl.textContent = icon
+      iconEl.style.fontSize = '12px'
+      row.appendChild(iconEl)
+
+      const nameEl = document.createElement('span')
+      nameEl.textContent = name
+      nameEl.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+      row.appendChild(nameEl)
+
+      if (badge) {
+        const badgeEl = document.createElement('span')
+        badgeEl.textContent = badge
+        badgeEl.style.cssText = 'font-size:10px;padding:1px 4px;border-radius:3px;' +
+          (badge === 'M' ? 'color:#fbbf24;background:rgba(251,191,36,0.15);' :
+           badge === '?' || badge === '??' ? 'color:#6ee7b7;background:rgba(110,231,183,0.15);' :
+           badge === 'D' ? 'color:#f87171;background:rgba(248,113,113,0.15);' :
+           badge === 'A' ? 'color:#60a5fa;background:rgba(96,165,250,0.15);' :
+           'color:var(--text-muted);')
+        row.appendChild(badgeEl)
+      }
+      return row
+    }
+
+    loadDir(folderPath)
+    return
+  }
+
   if (tile.type === 'note') {
     // Phase 3-14: Sticky Note — textarea bound to tile.noteContent, persisted via canvas state
     // If tile.filePath is set, load/save from disk; otherwise keep in canvas state

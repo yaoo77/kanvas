@@ -8,8 +8,11 @@ interface PtySession {
   pty: IPty
   sessionId: string
   webContentsId: number
+  scrollback: string[]        // Phase 5-13: ring buffer of raw pty output
+  scrollbackBytes: number
 }
 
+const MAX_SCROLLBACK_BYTES = 512 * 1024  // 512KB per session
 const sessions = new Map<string, PtySession>()
 let nextId = 1
 
@@ -83,10 +86,19 @@ export function registerPtyHandlers(): void {
       } as Record<string, string>
     })
 
-    const session: PtySession = { pty, sessionId, webContentsId }
+    const session: PtySession = { pty, sessionId, webContentsId, scrollback: [], scrollbackBytes: 0 }
     sessions.set(sessionId, session)
 
     pty.onData((data) => {
+      // Phase 5-13: record scrollback
+      session.scrollback.push(data)
+      session.scrollbackBytes += data.length
+      // Trim from front if over limit
+      while (session.scrollbackBytes > MAX_SCROLLBACK_BYTES && session.scrollback.length > 1) {
+        const removed = session.scrollback.shift()!
+        session.scrollbackBytes -= removed.length
+      }
+
       try {
         const wc = webContents.fromId(webContentsId)
         wc?.send('pty:data', { sessionId, data })
@@ -143,6 +155,13 @@ export function registerPtyHandlers(): void {
   ipcMain.handle('pty:discover', () => {
     return Array.from(sessions.keys())
   })
+
+  // Phase 5-13: get scrollback buffer for a session (for re-hydration after webview reload)
+  ipcMain.handle('pty:get-scrollback', (_e, { sessionId }: { sessionId: string }) => {
+    const s = sessions.get(sessionId)
+    if (!s) return null
+    return s.scrollback.join('')
+  })
 }
 
 export function killAllSessions(): void {
@@ -154,4 +173,30 @@ export function killAllSessions(): void {
     }
     sessions.delete(id)
   }
+}
+
+// Phase 5-13: save all scrollback buffers to disk before quit
+export function saveAllScrollback(): void {
+  const sessionsDir = join(homedir(), '.kawase', 'sessions')
+  if (!existsSync(sessionsDir)) mkdirSync(sessionsDir, { recursive: true })
+  for (const [id, session] of sessions) {
+    try {
+      const data = session.scrollback.join('')
+      if (data.length > 0) {
+        writeFileSync(join(sessionsDir, `${id}.scrollback`), data)
+      }
+    } catch {}
+  }
+}
+
+// Phase 5-13: load scrollback from disk for a session ID
+export function loadScrollback(sessionId: string): string | null {
+  const fp = join(homedir(), '.kawase', 'sessions', `${sessionId}.scrollback`)
+  try {
+    if (existsSync(fp)) {
+      const { readFileSync } = require('fs')
+      return readFileSync(fp, 'utf-8')
+    }
+  } catch {}
+  return null
 }

@@ -96,6 +96,7 @@ contextBridge.exposeInMainWorld('api', {
   ptyReconnect: (id: string, cols: number, rows: number) =>
     ipcRenderer.invoke('pty:reconnect', { sessionId: id, cols, rows }),
   ptyDiscover: () => ipcRenderer.invoke('pty:discover'),
+  ptyGetScrollback: (id: string) => ipcRenderer.invoke('pty:get-scrollback', { sessionId: id }),
 
   onPtyData: (cb: (payload: { sessionId: string; data: string }) => void) => { dataListeners.add(cb) },
   offPtyData: (cb: (payload: { sessionId: string; data: string }) => void) => { dataListeners.delete(cb) },

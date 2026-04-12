@@ -13,6 +13,7 @@ declare global {
       ptyResize: (id: string, cols: number, rows: number) => Promise<void>
       ptyKill: (id: string) => Promise<void>
       ptyReconnect: (id: string, cols: number, rows: number) => Promise<void>
+      ptyGetScrollback: (id: string) => Promise<string | null>
       onPtyData: (cb: (payload: { sessionId: string; data: string }) => void) => void
       offPtyData: (cb: (payload: { sessionId: string; data: string }) => void) => void
       onPtyExit: (cb: (payload: { sessionId: string; exitCode: number }) => void) => void
@@ -604,6 +605,13 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
 
       window.api.ptyResize(id, term.cols, term.rows)
       onStatusChange(termId, 'connected')
+
+      // Phase 5-13: hydrate scrollback from main process ring buffer
+      window.api.ptyGetScrollback(id).then((sb) => {
+        if (sb && sb.length > 0) {
+          term.write(sb)
+        }
+      }).catch(() => {})
 
       const inputDisposable = term.onData((data) => {
         window.api.ptyWrite(id, data)
