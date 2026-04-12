@@ -509,6 +509,7 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
       })
 
       // Phase 1-4: Smart Copy (Cmd+Shift+C) — trim trailing whitespace per line
+      // Phase 1-7: Cmd+V with clipboard image → save temp file and paste path to pty
       term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
         if (e.type !== 'keydown') return true
         if (e.metaKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
@@ -521,6 +522,24 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
               .replace(/\n{3,}/g, '\n\n')
             navigator.clipboard.writeText(cleaned)
           }
+          e.preventDefault()
+          return false
+        }
+        if (e.metaKey && !e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+          // Try to paste clipboard image as temp-file path
+          window.api.saveClipboardImageToTemp().then((tmpPath) => {
+            const sid = sessionRegistry.get(termId)?.sessionId
+            if (!sid) return
+            if (tmpPath) {
+              // Claude Code accepts bare file paths; Codex expects @ prefix — use bare, user can adjust
+              window.api.ptyWrite(sid, tmpPath.includes(' ') ? `'${tmpPath}' ` : `${tmpPath} `)
+            } else {
+              // No image in clipboard: fall back to text paste
+              navigator.clipboard.readText().then((text) => {
+                if (text) window.api.ptyWrite(sid, text)
+              })
+            }
+          })
           e.preventDefault()
           return false
         }

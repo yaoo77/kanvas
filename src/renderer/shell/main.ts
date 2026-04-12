@@ -428,6 +428,37 @@ function applyCanvasTransform(): void {
   tileLayer.style.transformOrigin = '0 0'
 }
 
+// ─── Viewport helpers ─────────────────────────────────────────────────
+
+function centerViewportOnTile(tile: Tile, animate = true): void {
+  const rect = panelViewer.getBoundingClientRect()
+  const targetPanX = rect.width / 2 - (tile.x + tile.width / 2) * zoom
+  const targetPanY = rect.height / 2 - (tile.y + tile.height / 2) * zoom
+  if (!animate) {
+    panX = targetPanX
+    panY = targetPanY
+    applyCanvasTransform()
+    drawGrid()
+    scheduleSave()
+    return
+  }
+  const startX = panX
+  const startY = panY
+  const duration = 280
+  const t0 = performance.now()
+  const step = (t: number) => {
+    const p = Math.min(1, (t - t0) / duration)
+    const ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2
+    panX = startX + (targetPanX - startX) * ease
+    panY = startY + (targetPanY - startY) * ease
+    applyCanvasTransform()
+    drawGrid()
+    if (p < 1) requestAnimationFrame(step)
+    else scheduleSave()
+  }
+  requestAnimationFrame(step)
+}
+
 // ─── Snap ────────────────────────────────────────────────────────────
 
 function snapToGrid(v: number): number {
@@ -870,6 +901,14 @@ function setupTileDrag(titlebar: HTMLDivElement, tile: Tile): void {
   let tileStartY = 0
   let isDragging = false
 
+  // Phase 1-5: double-click titlebar to center viewport on this tile
+  titlebar.addEventListener('dblclick', (e) => {
+    if ((e.target as HTMLElement).closest('button')) return
+    e.preventDefault()
+    e.stopPropagation()
+    centerViewportOnTile(tile, true)
+  })
+
   titlebar.addEventListener('mousedown', (e) => {
     if ((e.target as HTMLElement).closest('button')) return
     if (e.button !== 0) return
@@ -1096,6 +1135,103 @@ function setupCanvasInteractions(): void {
     const canvasX = (e.clientX - rect.left - panX) / zoom
     const canvasY = (e.clientY - rect.top - panY) / zoom
     createCanvasTile('terminal', snapToGrid(canvasX), snapToGrid(canvasY))
+  })
+
+  // Phase 1-6: Quick-create menu — click empty canvas to get instant [+ Terminal] [+ Note]
+  let quickMenuEl: HTMLDivElement | null = null
+  const closeQuickMenu = () => {
+    if (quickMenuEl) {
+      quickMenuEl.remove()
+      quickMenuEl = null
+    }
+  }
+  const showQuickCreateMenu = (clientX: number, clientY: number, canvasX: number, canvasY: number) => {
+    closeQuickMenu()
+    const menu = document.createElement('div')
+    menu.className = 'quick-create-menu'
+    menu.style.cssText = [
+      'position:fixed',
+      `left:${clientX + 4}px`,
+      `top:${clientY + 4}px`,
+      'background:rgba(30,30,30,0.95)',
+      'border:1px solid #555',
+      'border-radius:6px',
+      'padding:4px',
+      'display:flex',
+      'gap:4px',
+      'z-index:9999',
+      'box-shadow:0 4px 12px rgba(0,0,0,0.4)',
+      'font-size:12px',
+      'color:#e0e0e0',
+      "font-family:'SF Pro', sans-serif",
+    ].join(';')
+    const mkBtn = (label: string, onClick: () => void) => {
+      const b = document.createElement('button')
+      b.textContent = label
+      b.style.cssText = [
+        'background:transparent',
+        'border:none',
+        'color:inherit',
+        'padding:6px 10px',
+        'cursor:pointer',
+        'border-radius:4px',
+        'font-size:inherit',
+      ].join(';')
+      b.addEventListener('mouseenter', () => { b.style.background = '#3a3a3a' })
+      b.addEventListener('mouseleave', () => { b.style.background = 'transparent' })
+      b.addEventListener('click', (e) => {
+        e.stopPropagation()
+        onClick()
+        closeQuickMenu()
+      })
+      return b
+    }
+    menu.appendChild(mkBtn('+ Terminal', () => {
+      createCanvasTile('terminal', snapToGrid(canvasX), snapToGrid(canvasY))
+    }))
+    menu.appendChild(mkBtn('+ Note', () => {
+      createCanvasTile('note', snapToGrid(canvasX), snapToGrid(canvasY))
+    }))
+    menu.appendChild(mkBtn('✕', () => {}))
+    document.body.appendChild(menu)
+    quickMenuEl = menu
+    const timer = window.setTimeout(closeQuickMenu, 4000)
+    const dismiss = (ev: MouseEvent) => {
+      if (quickMenuEl && !quickMenuEl.contains(ev.target as Node)) {
+        closeQuickMenu()
+        window.clearTimeout(timer)
+        document.removeEventListener('mousedown', dismiss, true)
+      }
+    }
+    window.setTimeout(() => {
+      document.addEventListener('mousedown', dismiss, true)
+    }, 100)
+  }
+
+  // Track clicks on empty canvas — detect pure clicks (no drag) and show quick menu
+  let qmDownX = 0
+  let qmDownY = 0
+  let qmDownTime = 0
+  panelViewer.addEventListener('mousedown', (e) => {
+    qmDownX = e.clientX
+    qmDownY = e.clientY
+    qmDownTime = Date.now()
+  }, true)
+  panelViewer.addEventListener('mouseup', (e) => {
+    const target = e.target as HTMLElement
+    if (target.closest('.canvas-tile')) return
+    if (e.button !== 0) return
+    if (spaceHeld) return
+    const dx = Math.abs(e.clientX - qmDownX)
+    const dy = Math.abs(e.clientY - qmDownY)
+    const dt = Date.now() - qmDownTime
+    // Pure click: minimal movement, short time
+    if (dx < 4 && dy < 4 && dt < 300) {
+      const rect = panelViewer.getBoundingClientRect()
+      const canvasX = (e.clientX - rect.left - panX) / zoom
+      const canvasY = (e.clientY - rect.top - panY) / zoom
+      showQuickCreateMenu(e.clientX, e.clientY, canvasX, canvasY)
+    }
   })
 
   // Drop files from navigator onto canvas → create file tiles
