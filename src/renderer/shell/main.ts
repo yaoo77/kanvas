@@ -2164,8 +2164,14 @@ function setupCanvasInteractions(): void {
   panelViewer.addEventListener('mouseup', (e) => {
     const target = e.target as HTMLElement
     if (target.closest('.canvas-tile')) return
+    if (target.closest('.quick-create-menu')) return
+    if (target.closest('#new-tile-fab')) return
+    if (target.closest('#new-tile-menu')) return
+    if (target.closest('#tile-ctx-menu')) return
+    if (target.closest('#tile-rename-popover')) return
     if (e.button !== 0) return
     if (spaceHeld) return
+    if (draftingConnection) return
     const dx = Math.abs(e.clientX - qmDownX)
     const dy = Math.abs(e.clientY - qmDownY)
     const dt = Date.now() - qmDownTime
@@ -2304,6 +2310,30 @@ function handleShortcut(action: string): void {
       break
     case 'toggle-settings':
       window.shellApi.openSettings()
+      break
+    case 'toggle-theme': {
+      const cur = document.body.getAttribute('data-theme') ?? 'dark'
+      const next = cur === 'dark' ? 'light' : 'dark'
+      document.body.setAttribute('data-theme', next)
+      window.shellApi.setPref('theme', next)
+      break
+    }
+    case 'toggle-draw':
+      toggleDrawMode()
+      break
+    case 'toggle-right-panel': {
+      const rp = document.getElementById('panel-right')!
+      if (rp.classList.contains('open')) {
+        rp.classList.remove('open')
+        document.getElementById('right-toggle')?.classList.remove('active')
+      } else {
+        rp.classList.add('open')
+        document.getElementById('right-toggle')?.classList.add('active')
+      }
+      break
+    }
+    case 'start-connection':
+      if (focusedTileId) startDrafting(focusedTileId)
       break
   }
 }

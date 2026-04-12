@@ -478,7 +478,44 @@ function buildAppMenu(): void {
         { role: 'zoomIn' },
         { role: 'zoomOut' },
         { type: 'separator' },
-        { role: 'togglefullscreen' }
+        { role: 'togglefullscreen' },
+        { type: 'separator' },
+        {
+          label: 'Toggle Theme',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => forwardToShell('shell:shortcut', 'toggle-theme'),
+        },
+        {
+          label: 'Toggle Draw Mode',
+          accelerator: 'CmdOrCtrl+D',
+          click: () => forwardToShell('shell:shortcut', 'toggle-draw'),
+        },
+      ]
+    },
+    {
+      label: 'Canvas',
+      submenu: [
+        {
+          label: 'Toggle Right Panel',
+          accelerator: 'CmdOrCtrl+J',
+          click: () => forwardToShell('shell:shortcut', 'toggle-right-panel'),
+        },
+        {
+          label: 'Start Connection',
+          accelerator: 'CmdOrCtrl+L',
+          click: () => forwardToShell('shell:shortcut', 'start-connection'),
+        },
+        { type: 'separator' },
+        {
+          label: 'New Terminal',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => forwardToShell('shell:shortcut', 'new-terminal'),
+        },
+        {
+          label: 'New Note',
+          accelerator: 'CmdOrCtrl+Shift+N',
+          click: () => forwardToShell('shell:shortcut', 'new-note'),
+        },
       ]
     },
     {
