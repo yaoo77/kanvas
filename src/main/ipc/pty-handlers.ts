@@ -54,10 +54,21 @@ export function registerPtyHandlers(): void {
     const skillDst = join(skillDir, 'kanvas.md')
     const skillSrc = join(__dirname, '../../packages/kanvas-cli/SKILL.md')
     try {
-      if (existsSync(skillSrc) && !existsSync(skillDst)) {
+      if (existsSync(skillSrc)) {
         if (!existsSync(skillDir)) mkdirSync(skillDir, { recursive: true })
         const { copyFileSync } = require('fs')
         copyFileSync(skillSrc, skillDst)
+      }
+    } catch {}
+
+    // Inject kanvas priority rule into CLAUDE.md so Claude Code prefers kanvas over maestri
+    const claudeMdPath = join(cwd, 'CLAUDE.md')
+    const kanvasRule = '\n\n[kanvas]\nThis terminal runs inside kanvas (KANVAS_TERMINAL=1). For ALL canvas operations (notes, tiles, connections), use the `kanvas` CLI — NOT maestri. The `kanvas` command is in PATH. Example: `kanvas note write <id> <text>`, `kanvas tiles`, `kanvas connect <from> <to>`.\n'
+    try {
+      const { readFileSync } = require('fs')
+      const existing = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf-8') : ''
+      if (!existing.includes('[kanvas]')) {
+        writeFileSync(claudeMdPath, existing + kanvasRule)
       }
     } catch {}
 
