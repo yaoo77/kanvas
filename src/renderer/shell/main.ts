@@ -31,6 +31,8 @@ declare global {
       showContextMenu: (items: Array<{ label: string; id: string }>) => Promise<string | null>
       selectFile: (path: string) => void
       openExternal: (url: string) => void
+      rolesLoad: () => Promise<AgentRole[]>
+      rolesSave: (roles: AgentRole[]) => Promise<void>
       getDragPaths: () => Promise<string[]>
       // cmux internal events
       onCmuxSplit: (cb: (direction: string) => void) => () => void
@@ -68,6 +70,7 @@ interface Tile {
   customName?: string       // Phase 1b-28: user-set tile title
   cwd?: string              // Phase 1b-27: remembered working directory
   roleId?: string           // Phase 3-17: assigned agent role
+  noteContent?: string      // Phase 3-14: sticky note markdown body
 }
 
 interface CanvasState {
@@ -76,6 +79,24 @@ interface CanvasState {
   zoom: number
   tiles: Tile[]
   nextZ: number
+  connections?: Connection[]
+}
+
+// Phase 3-15: Connection between two tiles
+interface Connection {
+  id: string
+  from: string           // source tile id
+  to: string             // target tile id
+  // future: label, style, direction
+}
+
+// Phase 3-17: Agent Role
+interface AgentRole {
+  id: string
+  name: string
+  icon: string
+  color: string
+  systemPrompt: string
 }
 
 interface WebviewEntry {
@@ -124,6 +145,10 @@ const webviews = new Map<string, WebviewEntry>()
 const tileElements = new Map<string, HTMLDivElement>()
 
 let tiles: Tile[] = []
+let connections: Connection[] = []  // Phase 3-15
+let roles: AgentRole[] = []          // Phase 3-17
+let draftingConnection: { fromId: string } | null = null  // Phase 3-18 drag state
+let connLayer: SVGSVGElement
 let nextZ = 1
 let panX = 0
 let panY = 0
@@ -163,6 +188,7 @@ let zoomIndicator: HTMLDivElement
 async function init(): Promise<void> {
   viewConfig = await window.shellApi.getViewConfig()
 
+  connLayer = document.getElementById('conn-layer') as unknown as SVGSVGElement
   gridCanvas = document.getElementById('grid-canvas') as HTMLCanvasElement
   gridCtx = gridCanvas.getContext('2d')!
   tileLayer = document.getElementById('tile-layer') as HTMLDivElement
@@ -202,6 +228,11 @@ async function init(): Promise<void> {
     }
   })
 
+  // Phase 3-17: Load agent roles
+  try {
+    roles = await window.shellApi.rolesLoad()
+  } catch { roles = [] }
+
   // Phase 1b-30: Theme system — load pref and apply
   const savedTheme = (await window.shellApi.getPref('theme') as 'dark' | 'light' | undefined) ?? 'dark'
   document.body.setAttribute('data-theme', savedTheme)
@@ -214,6 +245,39 @@ async function init(): Promise<void> {
       document.body.setAttribute('data-theme', next)
       window.shellApi.setPref('theme', next)
     }
+  })
+
+  // Phase 3-18: Cmd+L to start connection from focused tile
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'l' || e.key === 'L')) {
+      if (!focusedTileId) return
+      e.preventDefault()
+      startDrafting(focusedTileId)
+    }
+    if (e.key === 'Escape' && draftingConnection) {
+      cancelDrafting()
+    }
+  })
+  // Track mouse for drafting line
+  panelViewer.addEventListener('mousemove', (e) => {
+    if (draftingConnection) {
+      const rect = panelViewer.getBoundingClientRect()
+      draftingMouse = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+      drawConnections()
+    }
+  })
+  // Click on tile while drafting completes the connection
+  panelViewer.addEventListener('click', (e) => {
+    if (!draftingConnection) return
+    const target = (e.target as HTMLElement).closest('.canvas-tile') as HTMLElement | null
+    if (target) {
+      const id = target.getAttribute('data-tile-id')
+      if (id) {
+        completeDraftingTo(id)
+        return
+      }
+    }
+    cancelDrafting()
   })
 
   // Phase 2-11: Canvas-level right sidebar terminal (Cmd+J toggles)
@@ -386,6 +450,12 @@ async function loadCanvasState(): Promise<void> {
       for (const t of state.tiles) {
         tiles.push(t)
         renderTileElement(t)
+        // Phase 3-17: restore role badge
+        if (t.roleId) assignRoleToTile(t, t.roleId)
+      }
+      // Phase 3-15: restore connections
+      if (Array.isArray(state.connections)) {
+        connections = state.connections
       }
       applyCanvasTransform()
     }
@@ -401,6 +471,7 @@ function scheduleSave(): void {
     const centerY = (rect.height / 2 - panY) / zoom
     const state: CanvasState & { centerX: number; centerY: number } = {
       panX, panY, zoom, tiles, nextZ, centerX, centerY,
+      connections,
     }
     window.shellApi.canvasSaveState(state)
   }, 500)
@@ -552,6 +623,188 @@ function updateZoomIndicator(): void {
 function applyCanvasTransform(): void {
   tileLayer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`
   tileLayer.style.transformOrigin = '0 0'
+  drawConnections()
+}
+
+// ─── Phase 3-15: Connection rendering ────────────────────────────────
+
+function getTileCenter(tile: Tile): { x: number; y: number } {
+  return { x: tile.x + tile.width / 2, y: tile.y + tile.height / 2 }
+}
+
+function screenFromCanvas(cx: number, cy: number): { x: number; y: number } {
+  return { x: cx * zoom + panX, y: cy * zoom + panY }
+}
+
+function drawConnections(): void {
+  if (!connLayer) return
+  const rect = panelViewer.getBoundingClientRect()
+  connLayer.setAttribute('width', String(rect.width))
+  connLayer.setAttribute('height', String(rect.height))
+  connLayer.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`)
+  while (connLayer.firstChild) connLayer.removeChild(connLayer.firstChild)
+  for (const conn of connections) {
+    const from = tiles.find((t) => t.id === conn.from)
+    const to = tiles.find((t) => t.id === conn.to)
+    if (!from || !to) continue
+    const a = getTileCenter(from)
+    const b = getTileCenter(to)
+    const sa = screenFromCanvas(a.x, a.y)
+    const sb = screenFromCanvas(b.x, b.y)
+    const dx = sb.x - sa.x
+    const dy = sb.y - sa.y
+    const curvature = 0.3
+    const c1x = sa.x + dx * curvature
+    const c1y = sa.y + dy * 0.8
+    const c2x = sa.x + dx * (1 - curvature)
+    const c2y = sa.y + dy * 0.2
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    path.setAttribute('d', `M ${sa.x} ${sa.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${sb.x} ${sb.y}`)
+    path.classList.add('conn-line')
+    path.setAttribute('data-conn-id', conn.id)
+    path.addEventListener('click', (e) => {
+      e.stopPropagation()
+      connections = connections.filter((c) => c.id !== conn.id)
+      drawConnections()
+      scheduleSave()
+    })
+    connLayer.appendChild(path)
+  }
+  // Drafting line
+  if (draftingConnection && draftingMouse) {
+    const from = tiles.find((t) => t.id === draftingConnection.fromId)
+    if (from) {
+      const a = getTileCenter(from)
+      const sa = screenFromCanvas(a.x, a.y)
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      path.setAttribute('d', `M ${sa.x} ${sa.y} L ${draftingMouse.x} ${draftingMouse.y}`)
+      path.classList.add('conn-line', 'drafting')
+      connLayer.appendChild(path)
+    }
+  }
+}
+
+let draftingMouse: { x: number; y: number } | null = null
+
+// Phase 3-17: Assign a role to a tile and update badge
+function assignRoleToTile(tile: Tile, roleId: string | undefined): void {
+  tile.roleId = roleId
+  const el = tileElements.get(tile.id)
+  if (el) {
+    const existingBadge = el.querySelector('.role-badge')
+    if (existingBadge) existingBadge.remove()
+    if (roleId) {
+      const role = roles.find((r) => r.id === roleId)
+      if (role) {
+        const badge = document.createElement('span')
+        badge.className = 'role-badge'
+        badge.textContent = `${role.icon} ${role.name}`
+        badge.style.cssText = [
+          'display:inline-flex',
+          'align-items:center',
+          'gap:4px',
+          'padding:2px 6px',
+          'border-radius:4px',
+          'font-size:10px',
+          'margin-right:4px',
+          `background:${role.color}22`,
+          `color:${role.color}`,
+          'user-select:none',
+        ].join(';')
+        const titlebar = el.querySelector('.tile-title-bar')
+        const titleText = titlebar?.querySelector('.tile-title-text')
+        if (titleText && titlebar) {
+          titlebar.insertBefore(badge, titleText)
+        }
+      }
+    }
+  }
+  scheduleSave()
+  // If the tile has a terminal session, send a system note via cmux:write-to-pty
+  const role = roleId ? roles.find((r) => r.id === roleId) : null
+  if (role && tile.type === 'terminal') {
+    const wv = webviews.get(tile.id)
+    if (wv) {
+      const msg = `# Role: ${role.name}\n# ${role.systemPrompt}\n`
+      ;(wv.webview as any).send('cmux:write-to-pty', `\n# [kanvas] assigned role: ${role.name} (${role.icon})\n`)
+      void msg
+    }
+  }
+}
+
+// Phase 3-16: Send content to connected tiles (prompt + execute)
+function sendToConnected(tile: Tile): void {
+  const connIds = connections
+    .filter((c) => c.from === tile.id || c.to === tile.id)
+    .map((c) => (c.from === tile.id ? c.to : c.from))
+  if (connIds.length === 0) return
+  // Prompt user for message
+  const message = window.prompt(`Send to ${connIds.length} connected tile(s):`, '')
+  if (!message) return
+  for (const targetId of connIds) {
+    const target = tiles.find((t) => t.id === targetId)
+    if (!target) continue
+    if (target.type === 'terminal') {
+      const wv = webviews.get(target.id)
+      if (wv) (wv.webview as any).send('cmux:write-to-pty', message + '\r')
+    } else if (target.type === 'note') {
+      target.noteContent = (target.noteContent ?? '') + '\n' + message
+      // Trigger a redraw of the note textarea
+      const el = tileElements.get(target.id)
+      const ta = el?.querySelector('textarea') as HTMLTextAreaElement | null
+      if (ta) ta.value = target.noteContent
+      scheduleSave()
+    }
+  }
+}
+
+// Phase 3-20 hook: notify connected terminals when a note is edited
+function notifyNoteChanged(noteId: string, content: string): void {
+  // Find connections where `from` or `to` is the note id
+  for (const conn of connections) {
+    const otherId = conn.from === noteId ? conn.to : (conn.to === noteId ? conn.from : null)
+    if (!otherId) continue
+    const otherTile = tiles.find((t) => t.id === otherId)
+    if (!otherTile) continue
+    if (otherTile.type === 'terminal') {
+      // Deliver first line as a system comment; agents can poll or use CLI
+      const firstLine = content.split('\n')[0] ?? ''
+      const wv = webviews.get(otherTile.id)
+      if (wv) {
+        ;(wv.webview as any).send('cmux:write-to-pty', '')
+        // Actual agent-to-agent note sync is Phase 3-20 + /kanvas CLI
+        void firstLine
+      }
+    }
+  }
+}
+
+function startDrafting(fromId: string): void {
+  draftingConnection = { fromId }
+  const tile = tiles.find((t) => t.id === fromId)
+  if (tile) {
+    const c = getTileCenter(tile)
+    const s = screenFromCanvas(c.x, c.y)
+    draftingMouse = s
+  }
+  drawConnections()
+}
+function cancelDrafting(): void {
+  draftingConnection = null
+  draftingMouse = null
+  drawConnections()
+}
+function completeDraftingTo(toId: string): void {
+  if (!draftingConnection) return
+  if (draftingConnection.fromId === toId) { cancelDrafting(); return }
+  const conn: Connection = {
+    id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    from: draftingConnection.fromId,
+    to: toId,
+  }
+  connections.push(conn)
+  cancelDrafting()
+  scheduleSave()
 }
 
 // ─── Viewport helpers ─────────────────────────────────────────────────
@@ -987,6 +1240,25 @@ function openTileContextMenu(tile: Tile, clientX: number, clientY: number): void
   mk('Duplicate', () => duplicateTile(tile))
   mk('Bring to Front', () => bringToFront(tile.id))
   divider()
+  // Phase 3-18: start connection from this tile
+  mk('Start Connection (⌘L)', () => startDrafting(tile.id))
+  // Phase 3-16: send current selection / note content to connected tiles
+  if (connections.some((c) => c.from === tile.id || c.to === tile.id)) {
+    mk('Send to Connected…', () => sendToConnected(tile))
+  }
+  // Phase 3-17: role assignment submenu (flat for simplicity)
+  if (tile.type === 'terminal' && roles.length > 0) {
+    divider()
+    const currentRoleId = tile.roleId
+    for (const r of roles) {
+      const label = (r.id === currentRoleId ? '✓ ' : '   ') + `${r.icon} ${r.name}`
+      mk(label, () => assignRoleToTile(tile, r.id))
+    }
+    if (currentRoleId) {
+      mk('   Clear Role', () => assignRoleToTile(tile, undefined))
+    }
+  }
+  divider()
   mk('Close', () => removeTile(tile.id), { danger: true })
   menu.classList.add('open')
   const onOutside = (e: MouseEvent) => {
@@ -1002,16 +1274,32 @@ function openTileContextMenu(tile: Tile, clientX: number, clientY: number): void
 
 function createTileWebview(tile: Tile, container: HTMLDivElement): void {
   if (tile.type === 'note') {
+    // Phase 3-14: Sticky Note — textarea bound to tile.noteContent, persisted via canvas state
+    // If tile.filePath is set, load/save from disk; otherwise keep in canvas state
     const textarea = document.createElement('textarea')
     textarea.style.cssText = `
-      width: 100%; height: 100%; background: #1a1a1a; color: #e0e0e0;
+      width: 100%; height: 100%; background: var(--bg-panel); color: var(--text-primary);
       border: none; outline: none; resize: none; padding: 12px;
       font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px;
       line-height: 1.6;
     `
-    textarea.placeholder = 'Type your notes here...'
+    textarea.placeholder = '# Note\n\nType your notes here...'
     textarea.addEventListener('mousedown', (e) => e.stopPropagation())
     container.appendChild(textarea)
+
+    // Hydrate
+    textarea.value = tile.noteContent ?? ''
+
+    // Save on input (debounced)
+    let saveTimer: ReturnType<typeof setTimeout> | null = null
+    textarea.addEventListener('input', () => {
+      if (saveTimer) clearTimeout(saveTimer)
+      saveTimer = setTimeout(() => {
+        tile.noteContent = textarea.value
+        scheduleSave()
+        notifyNoteChanged(tile.id, textarea.value)
+      }, 300)
+    })
     return
   }
 

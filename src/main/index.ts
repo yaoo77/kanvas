@@ -200,6 +200,34 @@ function registerShellIpc(): void {
     return filepath
   })
 
+  // Phase 3-17: Agent Roles stored at ~/.kanvas/roles.json
+  ipcMain.handle('roles:load', async () => {
+    const { readFileSync, existsSync, writeFileSync, mkdirSync } = require('fs')
+    const { join } = require('path')
+    const dir = join(app.getPath('home'), '.kanvas')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    const fp = join(dir, 'roles.json')
+    if (!existsSync(fp)) {
+      const defaults = [
+        { id: 'lead',     name: 'Lead',         icon: '🎩', color: '#fbbf24', systemPrompt: 'You are the team lead. Coordinate, delegate, and summarize.' },
+        { id: 'coder',    name: 'Vibe Coder',   icon: '⚡', color: '#60a5fa', systemPrompt: 'You are a fast, pragmatic coder. Ship working code quickly.' },
+        { id: 'reviewer', name: 'Reviewer',     icon: '🔍', color: '#a78bfa', systemPrompt: 'You are a strict reviewer. Find bugs, missing tests, and bad patterns.' },
+        { id: 'tester',   name: 'Tester',       icon: '🧪', color: '#6ee7b7', systemPrompt: 'You are a thorough tester. Design test cases and verify edge cases.' },
+        { id: 'docs',     name: 'Docs Goblin',  icon: '📝', color: '#f87171', systemPrompt: 'You are the documentation specialist. Write clear docs and examples.' },
+      ]
+      writeFileSync(fp, JSON.stringify(defaults, null, 2))
+      return defaults
+    }
+    try { return JSON.parse(readFileSync(fp, 'utf-8')) } catch { return [] }
+  })
+  ipcMain.handle('roles:save', async (_e, roles: unknown) => {
+    const { writeFileSync, mkdirSync, existsSync } = require('fs')
+    const { join } = require('path')
+    const dir = join(app.getPath('home'), '.kanvas')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'roles.json'), JSON.stringify(roles, null, 2))
+  })
+
   // Canvas pinch forwarding
   ipcMain.on('canvas:forward-pinch', (_e, deltaY: number) => {
     mainWindow?.webContents.send('canvas:pinch', deltaY)

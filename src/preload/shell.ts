@@ -85,6 +85,8 @@ contextBridge.exposeInMainWorld('shellApi', {
   showContextMenu: (items: Array<{ label: string; id: string }>) =>
     ipcRenderer.invoke('context-menu:show', items),
   openExternal: (url: string) => ipcRenderer.send('shell:open-external', url),
+  rolesLoad: () => ipcRenderer.invoke('roles:load'),
+  rolesSave: (roles: unknown) => ipcRenderer.invoke('roles:save', roles),
 
   onCanvasPinch: (cb: (deltaY: number) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, deltaY: number) => cb(deltaY)
