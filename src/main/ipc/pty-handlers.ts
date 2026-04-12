@@ -46,6 +46,21 @@ export function registerPtyHandlers(): void {
       'export PROMPT_EOL_MARK=""',
     ].join('\n'))
 
+    // Resolve kanvas CLI bin directory (from packages/kanvas-cli/bin)
+    const kanvasCliBin = join(__dirname, '../../packages/kanvas-cli/bin')
+
+    // Auto-install SKILL.md for Claude Code discovery
+    const skillDir = join(cwd, '.claude', 'skills')
+    const skillDst = join(skillDir, 'kanvas.md')
+    const skillSrc = join(__dirname, '../../packages/kanvas-cli/SKILL.md')
+    try {
+      if (existsSync(skillSrc) && !existsSync(skillDst)) {
+        if (!existsSync(skillDir)) mkdirSync(skillDir, { recursive: true })
+        const { copyFileSync } = require('fs')
+        copyFileSync(skillSrc, skillDst)
+      }
+    } catch {}
+
     // Create kanvas bin directory with custom `open` wrapper for URLs
     const kanvasBin = join(kanvasZshDir, 'bin')
     if (!existsSync(kanvasBin)) mkdirSync(kanvasBin, { recursive: true })
@@ -82,7 +97,8 @@ export function registerPtyHandlers(): void {
         COLORTERM: 'truecolor',
         ZDOTDIR: kanvasZshDir,
         BROWSER: browserScript,
-        PATH: kanvasBin + ':' + (process.env.PATH || ''),
+        PATH: kanvasCliBin + ':' + kanvasBin + ':' + (process.env.PATH || ''),
+        KANVAS_SOCKET: join(homedir(), '.kanvas', 'cli.sock'),
       } as Record<string, string>
     })
 
