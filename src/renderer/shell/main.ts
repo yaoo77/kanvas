@@ -33,6 +33,10 @@ declare global {
       openExternal: (url: string) => void
       rolesLoad: () => Promise<AgentRole[]>
       rolesSave: (roles: AgentRole[]) => Promise<void>
+      onCliRequest: (cb: (id: string, method: string, params: unknown) => void) => () => void
+      cliRespond: (id: string, result: unknown, error?: string | null) => void
+      keymapLoad: () => Promise<Record<string, string>>
+      keymapSave: (k: Record<string, string>) => Promise<void>
       getDragPaths: () => Promise<string[]>
       // cmux internal events
       onCmuxSplit: (cb: (direction: string) => void) => () => void
@@ -232,6 +236,21 @@ async function init(): Promise<void> {
   try {
     roles = await window.shellApi.rolesLoad()
   } catch { roles = [] }
+
+  // Phase 4-22: Keyboard shortcut engine with chord support
+  let keymap: Record<string, string> = {}
+  try { keymap = await window.shellApi.keymapLoad() } catch { keymap = {} }
+  setupKeybindings(keymap)
+
+  // Phase 4-24: kanvas CLI request handler
+  window.shellApi.onCliRequest(async (id, method, params: any) => {
+    try {
+      const result = await handleCliMethod(method, params ?? {})
+      window.shellApi.cliRespond(id, result, null)
+    } catch (err) {
+      window.shellApi.cliRespond(id, null, (err as Error).message)
+    }
+  })
 
   // Phase 1b-30: Theme system — load pref and apply
   const savedTheme = (await window.shellApi.getPref('theme') as 'dark' | 'light' | undefined) ?? 'dark'
@@ -755,6 +774,187 @@ function sendToConnected(tile: Tile): void {
       if (ta) ta.value = target.noteContent
       scheduleSave()
     }
+  }
+}
+
+// Phase 4-22: Keybinding engine — supports chorded shortcuts like "mod+k mod+t"
+function normalizeKeyEvent(e: KeyboardEvent): string {
+  const parts: string[] = []
+  if (e.metaKey || e.ctrlKey) parts.push('mod')
+  if (e.altKey) parts.push('alt')
+  if (e.shiftKey) parts.push('shift')
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase()
+  parts.push(k)
+  return parts.join('+')
+}
+
+function dispatchKeybinding(action: string): boolean {
+  switch (action) {
+    case 'toggle-theme': {
+      const cur = document.body.getAttribute('data-theme') ?? 'dark'
+      const next = cur === 'dark' ? 'light' : 'dark'
+      document.body.setAttribute('data-theme', next)
+      window.shellApi.setPref('theme', next)
+      return true
+    }
+    case 'new-terminal': {
+      const rect = panelViewer.getBoundingClientRect()
+      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.terminal.w / 2
+      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.terminal.h / 2
+      createCanvasTile('terminal', snapToGrid(cx), snapToGrid(cy))
+      return true
+    }
+    case 'new-note': {
+      const rect = panelViewer.getBoundingClientRect()
+      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.note.w / 2
+      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.note.h / 2
+      createCanvasTile('note', snapToGrid(cx), snapToGrid(cy))
+      return true
+    }
+    case 'start-connection': {
+      if (focusedTileId) startDrafting(focusedTileId)
+      return true
+    }
+    case 'rename-tile': {
+      if (!focusedTileId) return false
+      const t = tiles.find((x) => x.id === focusedTileId)
+      if (!t) return false
+      const el = tileElements.get(t.id)
+      const rect = el?.getBoundingClientRect()
+      if (rect) openTileRenamePopover(t, rect.left, rect.top + 32)
+      return true
+    }
+    default:
+      return false
+  }
+}
+
+function setupKeybindings(keymap: Record<string, string>): void {
+  // Invert: key-sequence -> action
+  const sequences: Array<{ seq: string[]; action: string }> = []
+  for (const [action, binding] of Object.entries(keymap)) {
+    const parts = binding.split(/\s+/)
+    sequences.push({ seq: parts, action })
+  }
+  let pending: string[] = []
+  let pendingTimer: ReturnType<typeof setTimeout> | null = null
+
+  document.addEventListener('keydown', (e) => {
+    if (isInputFocused()) return
+    const key = normalizeKeyEvent(e)
+    pending.push(key)
+    if (pendingTimer) clearTimeout(pendingTimer)
+
+    // Check exact match
+    const match = sequences.find((s) => s.seq.length === pending.length && s.seq.every((k, i) => k === pending[i]))
+    if (match) {
+      if (dispatchKeybinding(match.action)) {
+        e.preventDefault()
+        pending = []
+        return
+      }
+    }
+    // Check if pending is a prefix of any longer sequence
+    const hasPrefix = sequences.some((s) => s.seq.length > pending.length && s.seq.slice(0, pending.length).every((k, i) => k === pending[i]))
+    if (hasPrefix) {
+      e.preventDefault()
+      pendingTimer = setTimeout(() => { pending = [] }, 800)
+    } else {
+      pending = []
+    }
+  })
+}
+
+// Phase 4-24: kanvas CLI method dispatcher
+async function handleCliMethod(method: string, params: Record<string, unknown>): Promise<unknown> {
+  switch (method) {
+    case 'tiles.list':
+      return tiles.map((t) => ({
+        id: t.id, type: t.type, name: tileLabel(t),
+        x: t.x, y: t.y, width: t.width, height: t.height,
+        cwd: t.cwd, filePath: t.filePath, url: t.url, roleId: t.roleId,
+      }))
+    case 'tile.get': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t) throw new Error('tile not found')
+      return { ...t, name: tileLabel(t) }
+    }
+    case 'tile.create': {
+      const type = (params.type as Tile['type']) ?? 'terminal'
+      const rect = panelViewer.getBoundingClientRect()
+      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES[type].w / 2
+      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES[type].h / 2
+      const tile = createCanvasTile(type, snapToGrid(cx), snapToGrid(cy))
+      if (typeof params.noteContent === 'string') tile.noteContent = params.noteContent
+      if (typeof params.cwd === 'string') tile.cwd = params.cwd
+      scheduleSave()
+      return { id: tile.id, type: tile.type }
+    }
+    case 'tile.focus': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t) throw new Error('tile not found')
+      bringToFront(t.id)
+      centerViewportOnTile(t, true)
+      return { ok: true }
+    }
+    case 'note.write': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t || t.type !== 'note') throw new Error('note not found')
+      t.noteContent = String(params.content ?? '')
+      const el = tileElements.get(t.id)
+      const ta = el?.querySelector('textarea') as HTMLTextAreaElement | null
+      if (ta) ta.value = t.noteContent
+      scheduleSave()
+      return { ok: true }
+    }
+    case 'note.append': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t || t.type !== 'note') throw new Error('note not found')
+      t.noteContent = (t.noteContent ?? '') + String(params.content ?? '')
+      const el = tileElements.get(t.id)
+      const ta = el?.querySelector('textarea') as HTMLTextAreaElement | null
+      if (ta) ta.value = t.noteContent
+      scheduleSave()
+      return { ok: true }
+    }
+    case 'note.read': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t || t.type !== 'note') throw new Error('note not found')
+      return t.noteContent ?? ''
+    }
+    case 'connection.create': {
+      const from = String(params.from ?? '')
+      const to = String(params.to ?? '')
+      if (!tiles.some((t) => t.id === from) || !tiles.some((t) => t.id === to)) {
+        throw new Error('tile not found')
+      }
+      const conn: Connection = {
+        id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        from, to,
+      }
+      connections.push(conn)
+      drawConnections()
+      scheduleSave()
+      return { id: conn.id }
+    }
+    case 'terminal.send': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t || t.type !== 'terminal') throw new Error('terminal tile not found')
+      const wv = webviews.get(t.id)
+      if (!wv) throw new Error('webview not ready')
+      ;(wv.webview as any).send('cmux:write-to-pty', String(params.text ?? ''))
+      return { ok: true }
+    }
+    case 'roles.list':
+      return roles
+    case 'role.assign': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t) throw new Error('tile not found')
+      assignRoleToTile(t, String(params.roleId ?? ''))
+      return { ok: true }
+    }
+    default:
+      throw new Error(`unknown method: ${method}`)
   }
 }
 

@@ -87,6 +87,16 @@ contextBridge.exposeInMainWorld('shellApi', {
   openExternal: (url: string) => ipcRenderer.send('shell:open-external', url),
   rolesLoad: () => ipcRenderer.invoke('roles:load'),
   rolesSave: (roles: unknown) => ipcRenderer.invoke('roles:save', roles),
+  keymapLoad: () => ipcRenderer.invoke('keymap:load'),
+  keymapSave: (k: unknown) => ipcRenderer.invoke('keymap:save', k),
+  onCliRequest: (cb: (id: string, method: string, params: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, id: string, method: string, params: unknown) => cb(id, method, params)
+    ipcRenderer.on('cli:request', handler)
+    return () => ipcRenderer.removeListener('cli:request', handler)
+  },
+  cliRespond: (id: string, result: unknown, error: string | null = null) => {
+    ipcRenderer.send('cli:response', id, result, error)
+  },
 
   onCanvasPinch: (cb: (deltaY: number) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, deltaY: number) => cb(deltaY)

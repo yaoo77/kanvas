@@ -200,6 +200,40 @@ function registerShellIpc(): void {
     return filepath
   })
 
+  // Phase 4-22: Keyboard shortcuts config at ~/.kanvas/keymap.json
+  ipcMain.handle('keymap:load', async () => {
+    const { readFileSync, existsSync, writeFileSync, mkdirSync } = require('fs')
+    const { join } = require('path')
+    const dir = join(app.getPath('home'), '.kanvas')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    const fp = join(dir, 'keymap.json')
+    if (!existsSync(fp)) {
+      const defaults = {
+        'toggle-theme': 'mod+shift+t',
+        'toggle-right-panel': 'mod+j',
+        'new-terminal': 'mod+t',
+        'new-note': 'mod+shift+n',
+        'start-connection': 'mod+l',
+        'smart-copy': 'mod+shift+c',
+        'close-tile': 'mod+w',
+        'rename-tile': 'mod+r',
+        // Chorded example
+        'focus-nav': 'mod+k mod+n',
+        'focus-terminal': 'mod+k mod+t',
+      }
+      writeFileSync(fp, JSON.stringify(defaults, null, 2))
+      return defaults
+    }
+    try { return JSON.parse(readFileSync(fp, 'utf-8')) } catch { return {} }
+  })
+  ipcMain.handle('keymap:save', async (_e, keymap: unknown) => {
+    const { writeFileSync, mkdirSync, existsSync } = require('fs')
+    const { join } = require('path')
+    const dir = join(app.getPath('home'), '.kanvas')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'keymap.json'), JSON.stringify(keymap, null, 2))
+  })
+
   // Phase 3-17: Agent Roles stored at ~/.kanvas/roles.json
   ipcMain.handle('roles:load', async () => {
     const { readFileSync, existsSync, writeFileSync, mkdirSync } = require('fs')
@@ -251,6 +285,78 @@ function registerShellIpc(): void {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'canvas-state.json'), JSON.stringify(state))
   })
+
+  // Phase 4-24: kanvas CLI — Unix domain socket JSON RPC
+  setupKanvasCliServer()
+}
+
+/* ── Phase 4-24: kanvas CLI socket server ── */
+
+let pendingCliRequests = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
+
+function setupKanvasCliServer(): void {
+  const net = require('net')
+  const fs = require('fs')
+  const os = require('os')
+  const { join } = require('path')
+  const dir = join(os.homedir(), '.kanvas')
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const sockPath = join(dir, 'cli.sock')
+  try { if (fs.existsSync(sockPath)) fs.unlinkSync(sockPath) } catch {}
+
+  const server = net.createServer((socket: any) => {
+    let buf = ''
+    socket.on('data', (chunk: Buffer) => {
+      buf += chunk.toString()
+      let idx = buf.indexOf('\n')
+      while (idx >= 0) {
+        const line = buf.slice(0, idx).trim()
+        buf = buf.slice(idx + 1)
+        if (line) handleCliRequest(line, socket)
+        idx = buf.indexOf('\n')
+      }
+    })
+    socket.on('error', () => {})
+  })
+  server.listen(sockPath)
+
+  app.on('before-quit', () => {
+    server.close()
+    try { fs.unlinkSync(sockPath) } catch {}
+  })
+
+  // Response from shell renderer
+  ipcMain.on('cli:response', (_e, id: string, result: unknown, error: string | null) => {
+    const pending = pendingCliRequests.get(id)
+    if (!pending) return
+    pendingCliRequests.delete(id)
+    if (error) pending.reject(new Error(error))
+    else pending.resolve(result)
+  })
+}
+
+async function handleCliRequest(line: string, socket: any): Promise<void> {
+  try {
+    const { method, params } = JSON.parse(line)
+    const id = `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const resultPromise = new Promise((resolve, reject) => {
+      pendingCliRequests.set(id, { resolve, reject })
+      // Timeout after 5 s
+      setTimeout(() => {
+        if (pendingCliRequests.has(id)) {
+          pendingCliRequests.delete(id)
+          reject(new Error('timeout waiting for shell'))
+        }
+      }, 5000)
+    })
+    mainWindow?.webContents.send('cli:request', id, method, params ?? {})
+    const result = await resultPromise
+    socket.write(JSON.stringify({ result }))
+    socket.end()
+  } catch (err) {
+    socket.write(JSON.stringify({ error: (err as Error).message }))
+    socket.end()
+  }
 }
 
 function setSettingsOpen(open: boolean): void {
