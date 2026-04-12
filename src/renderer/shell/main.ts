@@ -65,6 +65,9 @@ interface Tile {
   folderPath?: string
   url?: string
   sessionId?: string
+  customName?: string       // Phase 1b-28: user-set tile title
+  cwd?: string              // Phase 1b-27: remembered working directory
+  roleId?: string           // Phase 3-17: assigned agent role
 }
 
 interface CanvasState {
@@ -103,6 +106,15 @@ const DEFAULT_SIZES: Record<Tile['type'], { w: number; h: number }> = {
   viewer:   { w: 700, h: 500 },
   file:     { w: 700, h: 500 },
   note:     { w: 400, h: 300 },
+}
+
+// Phase 1b-26: Remember last size per type (updated when a tile is resized)
+const lastTileSizes: Partial<Record<Tile['type'], { w: number; h: number }>> = {}
+function getDefaultSize(type: Tile['type']): { w: number; h: number } {
+  return lastTileSizes[type] ?? DEFAULT_SIZES[type]
+}
+function rememberTileSize(type: Tile['type'], w: number, h: number): void {
+  lastTileSizes[type] = { w, h }
 }
 
 // ─── State ───────────────────────────────────────────────────────────
@@ -254,6 +266,33 @@ async function init(): Promise<void> {
   document.getElementById('zoom-in')!.addEventListener('click', (e) => { e.stopPropagation(); applyZoom(-50) })
   document.getElementById('zoom-out')!.addEventListener('click', (e) => { e.stopPropagation(); applyZoom(50) })
   document.getElementById('zoom-reset')!.addEventListener('click', (e) => { e.stopPropagation(); resetView() })
+
+  // Phase 1b-25: New-tile FAB (top-right) with dropdown menu
+  const fab = document.getElementById('new-tile-fab')!
+  const fabMenu = document.getElementById('new-tile-menu')!
+  fab.addEventListener('mousedown', (e) => e.stopPropagation())
+  fab.addEventListener('click', (e) => {
+    e.stopPropagation()
+    fabMenu.classList.toggle('open')
+  })
+  fabMenu.querySelectorAll('button[data-kind]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const kind = (btn as HTMLButtonElement).dataset.kind as Tile['type']
+      const rect = panelViewer.getBoundingClientRect()
+      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.terminal.w / 2
+      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.terminal.h / 2
+      if (kind === 'terminal' || kind === 'note' || kind === 'browser') {
+        createCanvasTile(kind, snapToGrid(cx), snapToGrid(cy))
+      }
+      fabMenu.classList.remove('open')
+    })
+  })
+  document.addEventListener('mousedown', (e) => {
+    if (!fabMenu.contains(e.target as Node) && !fab.contains(e.target as Node)) {
+      fabMenu.classList.remove('open')
+    }
+  })
 
   // Resize observer for grid redraw
   const ro = new ResizeObserver(() => drawGrid())
@@ -477,7 +516,7 @@ function createCanvasTile(
   y: number,
   extra?: { filePath?: string; folderPath?: string; url?: string; width?: number; height?: number }
 ): Tile {
-  const defaults = DEFAULT_SIZES[type]
+  const defaults = getDefaultSize(type)
   const tile: Tile = {
     id: generateTileId(),
     type,
@@ -711,6 +750,13 @@ function renderTileElement(tile: Tile): void {
   // Drag on titlebar
   setupTileDrag(titlebar, tile)
 
+  // Phase 1b-28/29: Right-click titlebar → context menu
+  titlebar.addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    openTileContextMenu(tile, e.clientX, e.clientY)
+  })
+
   // Click to focus
   container.addEventListener('mousedown', (e) => {
     if ((e.target as HTMLElement).closest('button')) return
@@ -758,6 +804,7 @@ let noteCounter = 0
 const tileLabelMap = new Map<string, string>()
 
 function tileLabel(tile: Tile): string {
+  if (tile.customName) return tile.customName
   if (tileLabelMap.has(tile.id)) return tileLabelMap.get(tile.id)!
   let label: string
   switch (tile.type) {
@@ -771,6 +818,97 @@ function tileLabel(tile: Tile): string {
   }
   tileLabelMap.set(tile.id, label)
   return label
+}
+
+// Phase 1b-28: Tile rename popover
+function openTileRenamePopover(tile: Tile, clientX: number, clientY: number): void {
+  const popover = document.getElementById('tile-rename-popover') as HTMLDivElement
+  const input = document.getElementById('tile-rename-input') as HTMLInputElement
+  popover.style.left = `${clientX}px`
+  popover.style.top = `${clientY}px`
+  input.value = tile.customName ?? tileLabel(tile)
+  popover.classList.add('open')
+  input.focus()
+  input.select()
+  const close = () => {
+    popover.classList.remove('open')
+    input.removeEventListener('keydown', onKey)
+    document.removeEventListener('mousedown', onOutside, true)
+  }
+  const save = () => {
+    const v = input.value.trim()
+    tile.customName = v || undefined
+    const el = tileElements.get(tile.id)
+    const tt = el?.querySelector('.tile-title-text')
+    if (tt) tt.textContent = tileLabel(tile)
+    scheduleSave()
+    close()
+  }
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Enter') { e.preventDefault(); save() }
+    else if (e.key === 'Escape') { e.preventDefault(); close() }
+  }
+  const onOutside = (e: MouseEvent) => {
+    if (!popover.contains(e.target as Node)) save()
+  }
+  input.addEventListener('keydown', onKey)
+  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 50)
+}
+
+// Phase 1b-29: Duplicate a tile
+function duplicateTile(tile: Tile): void {
+  const clone = createCanvasTile(tile.type, tile.x + 30, tile.y + 30, {
+    filePath: tile.filePath,
+    folderPath: tile.folderPath,
+    url: tile.url,
+    width: tile.width,
+    height: tile.height,
+  })
+  if (tile.customName) {
+    clone.customName = tile.customName + ' (copy)'
+    const el = tileElements.get(clone.id)
+    const tt = el?.querySelector('.tile-title-text')
+    if (tt) tt.textContent = tileLabel(clone)
+  }
+  scheduleSave()
+}
+
+// Phase 1b-28/29: Right-click context menu on tile titlebar
+function openTileContextMenu(tile: Tile, clientX: number, clientY: number): void {
+  const menu = document.getElementById('tile-ctx-menu') as HTMLDivElement
+  menu.innerHTML = ''
+  menu.style.left = `${clientX}px`
+  menu.style.top = `${clientY}px`
+  const mk = (label: string, action: () => void, opts?: { danger?: boolean }) => {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.textContent = label
+    if (opts?.danger) b.style.color = '#f87171'
+    b.addEventListener('click', (e) => {
+      e.stopPropagation()
+      action()
+      menu.classList.remove('open')
+    })
+    menu.appendChild(b)
+  }
+  const divider = () => {
+    const d = document.createElement('div')
+    d.className = 'divider'
+    menu.appendChild(d)
+  }
+  mk('Rename…', () => openTileRenamePopover(tile, clientX, clientY))
+  mk('Duplicate', () => duplicateTile(tile))
+  mk('Bring to Front', () => bringToFront(tile.id))
+  divider()
+  mk('Close', () => removeTile(tile.id), { danger: true })
+  menu.classList.add('open')
+  const onOutside = (e: MouseEvent) => {
+    if (!menu.contains(e.target as Node)) {
+      menu.classList.remove('open')
+      document.removeEventListener('mousedown', onOutside, true)
+    }
+  }
+  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 50)
 }
 
 // ─── Tile webview creation ───────────────────────────────────────────
@@ -834,8 +972,11 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
   if (!config) return
 
   src = config.src
-  if (tile.type === 'terminal' && tile.sessionId) {
-    src += `?sessionId=${encodeURIComponent(tile.sessionId)}`
+  if (tile.type === 'terminal') {
+    const params: string[] = []
+    if (tile.sessionId) params.push(`sessionId=${encodeURIComponent(tile.sessionId)}`)
+    if (tile.cwd) params.push(`cwd=${encodeURIComponent(tile.cwd)}`)
+    if (params.length) src += `?${params.join('&')}`
   }
   if ((tile.type === 'viewer' || tile.type === 'file') && tile.filePath) {
     src += `?file=${encodeURIComponent(tile.filePath)}`
@@ -857,6 +998,14 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
     }
     if (event.channel === 'request-remove-tile') {
       removeTile(tile.id)
+    }
+    // Phase 1b-27: Terminal reports its cwd (OSC 7)
+    if (event.channel === 'terminal-cwd-update') {
+      const newCwd = event.args?.[0]
+      if (typeof newCwd === 'string' && newCwd) {
+        tile.cwd = newCwd
+        scheduleSave()
+      }
     }
   })
 }
@@ -1022,6 +1171,7 @@ function startResize(e: MouseEvent, tile: Tile, dir: ResizeDir): void {
     overlay.remove()
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
+    rememberTileSize(tile.type, tile.width, tile.height)
     scheduleSave()
   }
 
@@ -1455,7 +1605,11 @@ export function createTerminalTile(cwd?: string): void {
   const rect = panelViewer.getBoundingClientRect()
   const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.terminal.w / 2
   const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.terminal.h / 2
-  createCanvasTile('terminal', snapToGrid(cx), snapToGrid(cy))
+  const tile = createCanvasTile('terminal', snapToGrid(cx), snapToGrid(cy))
+  if (cwd) {
+    tile.cwd = cwd
+    scheduleSave()
+  }
 }
 
 // ─── cmux internal handlers ──────────────────────────────────────────

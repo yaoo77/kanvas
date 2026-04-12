@@ -121,6 +121,59 @@
 
     /* Marquee selection */
     #marquee { position: absolute; border: 1px dashed #4a9eff; background: rgba(74,158,255,0.1); pointer-events: none; z-index: 3; display: none; }
+
+    /* New-tile FAB (top-right) */
+    #new-tile-fab {
+      position: absolute; top: 12px; right: 12px; z-index: 5;
+      background: rgba(30, 30, 30, 0.9); border: 1px solid #444; border-radius: 6px;
+      color: #ccc; font-size: 18px; width: 32px; height: 32px; display: flex;
+      align-items: center; justify-content: center; cursor: pointer;
+      backdrop-filter: blur(8px);
+    }
+    #new-tile-fab:hover { background: #333; color: #fff; border-color: #666; }
+    #new-tile-menu {
+      position: absolute; top: 52px; right: 12px; z-index: 6;
+      background: rgba(30, 30, 30, 0.95); border: 1px solid #555; border-radius: 6px;
+      padding: 4px; display: none; flex-direction: column; min-width: 160px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4); backdrop-filter: blur(8px);
+    }
+    #new-tile-menu.open { display: flex; }
+    #new-tile-menu button {
+      background: transparent; border: none; color: #e0e0e0; padding: 8px 12px;
+      text-align: left; cursor: pointer; border-radius: 4px; font-size: 12px;
+      font-family: inherit;
+    }
+    #new-tile-menu button:hover { background: #3a3a3a; }
+
+    /* Tile rename popover */
+    #tile-rename-popover {
+      position: fixed; z-index: 9999; background: #1e1e1e; border: 1px solid #555;
+      border-radius: 6px; padding: 8px; display: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    #tile-rename-popover.open { display: block; }
+    #tile-rename-popover input {
+      background: #121212; border: 1px solid #444; color: #e0e0e0;
+      padding: 6px 10px; border-radius: 4px; font-size: 12px; width: 200px;
+      outline: none; font-family: inherit;
+    }
+    #tile-rename-popover input:focus { border-color: #4a9eff; }
+
+    /* Tile context menu */
+    #tile-ctx-menu {
+      position: fixed; z-index: 9999; background: rgba(30,30,30,0.95);
+      border: 1px solid #555; border-radius: 6px; padding: 4px; display: none;
+      flex-direction: column; min-width: 160px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5); backdrop-filter: blur(8px);
+    }
+    #tile-ctx-menu.open { display: flex; }
+    #tile-ctx-menu button {
+      background: transparent; border: none; color: #e0e0e0; padding: 6px 12px;
+      text-align: left; cursor: pointer; border-radius: 4px; font-size: 12px;
+      font-family: inherit;
+    }
+    #tile-ctx-menu button:hover { background: #3a3a3a; }
+    #tile-ctx-menu .divider { height: 1px; background: #444; margin: 4px 0; }
   </style>
 </head>
 <body>
@@ -144,12 +197,20 @@
       <canvas id="grid-canvas"></canvas>
       <div id="tile-layer"></div>
       <div id="marquee"></div>
+      <button type="button" id="new-tile-fab" title="New tile">+</button>
+      <div id="new-tile-menu">
+        <button type="button" data-kind="terminal">+ Terminal</button>
+        <button type="button" data-kind="note">+ Note</button>
+        <button type="button" data-kind="browser">+ Browser</button>
+      </div>
       <div id="zoom-controls">
         <button id="zoom-out" title="Zoom Out">−</button>
         <button id="zoom-reset" title="Reset Zoom"><span id="zoom-indicator">100%</span></button>
         <button id="zoom-in" title="Zoom In">+</button>
       </div>
     </div>
+    <div id="tile-rename-popover"><input type="text" id="tile-rename-input" /></div>
+    <div id="tile-ctx-menu"></div>
   </div>
 
   <div id="settings-overlay">

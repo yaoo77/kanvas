@@ -18,6 +18,7 @@ declare global {
       onPtyExit: (cb: (payload: { sessionId: string; exitCode: number }) => void) => void
       offPtyExit: (cb: (payload: { sessionId: string; exitCode: number }) => void) => void
       notifyPtySessionId: (id: string) => void
+      notifyTerminalCwd: (cwd: string) => void
       cmuxExec: (args: string[]) => Promise<{ ok: boolean; output?: string; error?: string }>
       onCmuxWrite: (cb: (text: string) => void) => void
       offCmuxWrite: (cb: (text: string) => void) => void
@@ -550,6 +551,14 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
       let gotFirstPrompt = false
       const onData = (payload: { sessionId: string; data: string }) => {
         if (payload.sessionId === id) {
+          // Phase 1b-27: OSC 7 cwd detection — ESC ] 7 ; file://host/path BEL
+          const osc7Match = payload.data.match(/\x1b\]7;file:\/\/[^/]*(\/[^\x07\x1b]*?)(?:\x07|\x1b\\)/)
+          if (osc7Match) {
+            try {
+              const decoded = decodeURIComponent(osc7Match[1])
+              window.api.notifyTerminalCwd(decoded)
+            } catch {}
+          }
           const urlMatch = payload.data.match(/kanvas-open:(https?:\/\/[^\x07\x1b]+)/)
           if (urlMatch) {
             window.api.cmuxExec(['new-pane', '--type', 'browser', '--url', urlMatch[1].trim()])
