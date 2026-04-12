@@ -22,6 +22,10 @@ declare global {
       onCmuxWrite: (cb: (text: string) => void) => void
       offCmuxWrite: (cb: (text: string) => void) => void
       getConfig: () => Promise<{ workspacePath?: string }>
+      openExternal: (url: string) => void
+      openPath: (path: string) => Promise<{ ok: boolean; error?: string }>
+      selectFile: (path: string) => void
+      saveClipboardImageToTemp: () => Promise<string | null>
     }
   }
 }
@@ -259,6 +263,7 @@ interface RegistryEntry {
   inputDisposable: { dispose: () => void }
   resizeDisposable: { dispose: () => void }
   titleDisposable: { dispose: () => void }
+  scrollDisposable: { dispose: () => void }
 }
 
 const sessionRegistry = new Map<string, RegistryEntry>()
@@ -271,6 +276,7 @@ function destroyRegistryEntry(termId: string) {
   entry.inputDisposable.dispose()
   entry.resizeDisposable.dispose()
   entry.titleDisposable.dispose()
+  entry.scrollDisposable.dispose()
   entry.resizeObserver.disconnect()
   window.api.ptyKill(entry.sessionId)
   entry.term.dispose()
@@ -383,6 +389,144 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
       term.open(xtermContainer)
       fitAddon.fit()
 
+      // Cmd+Click URL link provider
+      const urlRegex = /(https?:\/\/[^\s"'<>()\[\]{}`]+[^\s"'<>()\[\]{}`.,;:!?])/g
+      term.registerLinkProvider({
+        provideLinks(bufferLineNumber: number, callback: (links: unknown[] | undefined) => void) {
+          const buffer = term.buffer.active
+          const line = buffer.getLine(bufferLineNumber - 1)
+          if (!line) { callback(undefined); return }
+          const lineText = line.translateToString(true)
+          const links: unknown[] = []
+          for (const match of lineText.matchAll(urlRegex)) {
+            if (match.index === undefined) continue
+            const start = match.index
+            const end = start + match[0].length
+            links.push({
+              range: {
+                start: { x: start + 1, y: bufferLineNumber },
+                end: { x: end, y: bufferLineNumber },
+              },
+              text: match[0],
+              activate(event: MouseEvent, text: string) {
+                if (event.metaKey || event.ctrlKey) {
+                  window.api.openExternal(text)
+                }
+              },
+              hover() {
+                xtermContainer.style.cursor = 'pointer'
+              },
+              leave() {
+                xtermContainer.style.cursor = ''
+              },
+            })
+          }
+          callback(links.length ? links : undefined)
+        },
+      })
+
+      // Cmd+Click bare filename link provider
+      // Matches: src/foo.ts, ./bar.js, /abs/path, with optional :line:col
+      const fileRegex = /(?:^|[\s"'`(\[])((?:\.{0,2}\/|\/)?[\w.@+-]+(?:\/[\w.@+-]+)+(?::\d+(?::\d+)?)?)/g
+      term.registerLinkProvider({
+        provideLinks(bufferLineNumber: number, callback: (links: unknown[] | undefined) => void) {
+          const buffer = term.buffer.active
+          const line = buffer.getLine(bufferLineNumber - 1)
+          if (!line) { callback(undefined); return }
+          const lineText = line.translateToString(true)
+          const links: unknown[] = []
+          for (const match of lineText.matchAll(fileRegex)) {
+            if (match.index === undefined) continue
+            const rawPath = match[1]
+            if (!rawPath) continue
+            // Skip if caught by URL regex
+            if (/^https?:\/\//i.test(rawPath)) continue
+            // Require at least one / to avoid matching every word
+            if (!rawPath.includes('/')) continue
+            const offset = match[0].length - rawPath.length
+            const start = match.index + offset
+            const end = start + rawPath.length
+            links.push({
+              range: {
+                start: { x: start + 1, y: bufferLineNumber },
+                end: { x: end, y: bufferLineNumber },
+              },
+              text: rawPath,
+              activate(event: MouseEvent, text: string) {
+                if (!(event.metaKey || event.ctrlKey)) return
+                // Strip :line:col suffix
+                const clean = text.replace(/:\d+(?::\d+)?$/, '')
+                // Resolve against cwd or workspace
+                let resolved = clean
+                if (!clean.startsWith('/')) {
+                  const base = cwd || ''
+                  if (base) {
+                    resolved = base.replace(/\/$/, '') + '/' + clean.replace(/^\.\//, '')
+                  }
+                }
+                window.api.selectFile(resolved)
+              },
+              hover() {
+                xtermContainer.style.cursor = 'pointer'
+              },
+              leave() {
+                xtermContainer.style.cursor = ''
+              },
+            })
+          }
+          callback(links.length ? links : undefined)
+        },
+      })
+
+      // Phase 1-3: Auto-scroll lock — jump-to-bottom button
+      xtermContainer.style.position = 'relative'
+      const jumpBtn = document.createElement('button')
+      jumpBtn.textContent = '↓ Jump to bottom'
+      jumpBtn.style.cssText = [
+        'position:absolute',
+        'right:12px',
+        'bottom:12px',
+        'padding:4px 10px',
+        'font-size:11px',
+        'font-family:inherit',
+        'background:rgba(60,60,60,0.85)',
+        'color:#e0e0e0',
+        'border:1px solid #555',
+        'border-radius:4px',
+        'cursor:pointer',
+        'display:none',
+        'z-index:10',
+      ].join(';')
+      jumpBtn.onclick = (e) => {
+        e.stopPropagation()
+        term.scrollToBottom()
+      }
+      xtermContainer.appendChild(jumpBtn)
+      const scrollDisposable = term.onScroll(() => {
+        const viewportY = term.buffer.active.viewportY
+        const baseY = term.buffer.active.baseY
+        jumpBtn.style.display = viewportY < baseY - 1 ? 'block' : 'none'
+      })
+
+      // Phase 1-4: Smart Copy (Cmd+Shift+C) — trim trailing whitespace per line
+      term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+        if (e.type !== 'keydown') return true
+        if (e.metaKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+          const sel = term.getSelection()
+          if (sel) {
+            const cleaned = sel
+              .split('\n')
+              .map((l) => l.replace(/[ \t]+$/, ''))
+              .join('\n')
+              .replace(/\n{3,}/g, '\n\n')
+            navigator.clipboard.writeText(cleaned)
+          }
+          e.preventDefault()
+          return false
+        }
+        return true
+      })
+
       // Connect data listener
       let gotFirstPrompt = false
       const onData = (payload: { sessionId: string; data: string }) => {
@@ -444,6 +588,7 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
         inputDisposable,
         resizeDisposable,
         titleDisposable,
+        scrollDisposable,
       })
     })
 

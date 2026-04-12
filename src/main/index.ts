@@ -178,6 +178,28 @@ function registerShellIpc(): void {
     forwardToShell('cmux:new-pane-with-url', url)
   })
 
+  ipcMain.handle('shell:open-path', async (_e, filePath: string) => {
+    const { existsSync } = require('fs')
+    if (!existsSync(filePath)) return { ok: false, error: 'not-found' }
+    const err = await shell.openPath(filePath)
+    return err ? { ok: false, error: err } : { ok: true }
+  })
+
+  ipcMain.handle('clipboard:save-image-to-temp', async () => {
+    const { clipboard } = require('electron')
+    const img = clipboard.readImage()
+    if (img.isEmpty()) return null
+    const { writeFileSync, mkdirSync, existsSync } = require('fs')
+    const { join } = require('path')
+    const { tmpdir } = require('os')
+    const dir = join(tmpdir(), 'kanvas-paste')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    const filename = `paste-${Date.now()}.png`
+    const filepath = join(dir, filename)
+    writeFileSync(filepath, img.toPNG())
+    return filepath
+  })
+
   // Canvas pinch forwarding
   ipcMain.on('canvas:forward-pinch', (_e, deltaY: number) => {
     mainWindow?.webContents.send('canvas:pinch', deltaY)

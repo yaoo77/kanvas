@@ -174,7 +174,10 @@ contextBridge.exposeInMainWorld('api', {
 
   // Clipboard & Finder
   copyToClipboard: (text: string) => { navigator.clipboard.writeText(text) },
-  showInFolder: (path: string) => ipcRenderer.send('shell:show-in-folder', path)
+  showInFolder: (path: string) => ipcRenderer.send('shell:show-in-folder', path),
+  openExternal: (url: string) => ipcRenderer.send('shell:open-external', url),
+  openPath: (path: string) => ipcRenderer.invoke('shell:open-path', path),
+  saveClipboardImageToTemp: () => ipcRenderer.invoke('clipboard:save-image-to-temp')
 })
 
 // Prevent ctrl+wheel from zooming the webview
