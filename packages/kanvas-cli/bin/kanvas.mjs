@@ -109,6 +109,9 @@ async function main() {
       case 'assign':
         result = await request('role.assign', { id: rest[0], roleId: rest[1] })
         break
+      case 'events':
+        result = await request('events.list')
+        break
       default:
         usage()
     }

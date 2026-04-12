@@ -84,6 +84,7 @@ interface CanvasState {
   tiles: Tile[]
   nextZ: number
   connections?: Connection[]
+  shapes?: Shape[]
 }
 
 // Phase 3-15: Connection between two tiles
@@ -101,6 +102,15 @@ interface AgentRole {
   icon: string
   color: string
   systemPrompt: string
+}
+
+// Phase 3-19: Hand-drawn shape on the canvas
+interface Shape {
+  id: string
+  kind: 'free'
+  points: Array<[number, number]>  // canvas-space coordinates
+  color: string
+  width: number
 }
 
 interface WebviewEntry {
@@ -151,6 +161,31 @@ const tileElements = new Map<string, HTMLDivElement>()
 let tiles: Tile[] = []
 let connections: Connection[] = []  // Phase 3-15
 let roles: AgentRole[] = []          // Phase 3-17
+let shapes: Shape[] = []              // Phase 3-19
+let drawLayer: SVGSVGElement
+let drawMode = false
+let currentShape: Shape | null = null
+
+// Phase 4b-34: Canvas event log — ring buffer kept in memory
+interface CanvasEvent {
+  ts: number
+  kind: string
+  tileId?: string
+  tileName?: string
+  payload?: unknown
+}
+const canvasEventLog: CanvasEvent[] = []
+const CANVAS_EVENT_LOG_MAX = 500
+function logCanvasEvent(ev: CanvasEvent): void {
+  canvasEventLog.push(ev)
+  if (canvasEventLog.length > CANVAS_EVENT_LOG_MAX) canvasEventLog.shift()
+  renderEventLog()
+}
+function renderEventLog(): void {
+  // Minimal UI: the drawer is rendered elsewhere; this is a hook.
+  // A full UI is deferred to a later pass; the log is queryable via
+  // `kanvas events`.
+}
 let draftingConnection: { fromId: string } | null = null  // Phase 3-18 drag state
 let connLayer: SVGSVGElement
 let nextZ = 1
@@ -193,6 +228,7 @@ async function init(): Promise<void> {
   viewConfig = await window.shellApi.getViewConfig()
 
   connLayer = document.getElementById('conn-layer') as unknown as SVGSVGElement
+  drawLayer = document.getElementById('draw-layer') as unknown as SVGSVGElement
   gridCanvas = document.getElementById('grid-canvas') as HTMLCanvasElement
   gridCtx = gridCanvas.getContext('2d')!
   tileLayer = document.getElementById('tile-layer') as HTMLDivElement
@@ -276,6 +312,51 @@ async function init(): Promise<void> {
     if (e.key === 'Escape' && draftingConnection) {
       cancelDrafting()
     }
+    // Phase 3-19: Cmd+D to toggle draw mode
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'd' || e.key === 'D')) {
+      e.preventDefault()
+      toggleDrawMode()
+    }
+    if (e.key === 'Escape' && drawMode) toggleDrawMode()
+  })
+
+  // Phase 3-19: record freehand drawing when in draw mode
+  drawLayer.addEventListener('mousedown', (e) => {
+    if (!drawMode) return
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = panelViewer.getBoundingClientRect()
+    const cx = (e.clientX - rect.left - panX) / zoom
+    const cy = (e.clientY - rect.top - panY) / zoom
+    currentShape = {
+      id: `shape-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'free',
+      points: [[cx, cy]],
+      color: 'rgba(255,200,80,0.9)',
+      width: 3,
+    }
+    const onMove = (ev: MouseEvent) => {
+      if (!currentShape) return
+      const nx = (ev.clientX - rect.left - panX) / zoom
+      const ny = (ev.clientY - rect.top - panY) / zoom
+      const last = currentShape.points[currentShape.points.length - 1]
+      if (Math.abs(nx - last[0]) + Math.abs(ny - last[1]) > 1.5) {
+        currentShape.points.push([nx, ny])
+        drawShapes()
+      }
+    }
+    const onUp = () => {
+      if (currentShape && currentShape.points.length > 1) {
+        shapes.push(currentShape)
+        scheduleSave()
+      }
+      currentShape = null
+      drawShapes()
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
   })
   // Track mouse for drafting line
   panelViewer.addEventListener('mousemove', (e) => {
@@ -476,6 +557,10 @@ async function loadCanvasState(): Promise<void> {
       if (Array.isArray(state.connections)) {
         connections = state.connections
       }
+      // Phase 3-19: restore shapes
+      if (Array.isArray(state.shapes)) {
+        shapes = state.shapes
+      }
       applyCanvasTransform()
     }
   } catch { /* first run, no state */ }
@@ -490,7 +575,7 @@ function scheduleSave(): void {
     const centerY = (rect.height / 2 - panY) / zoom
     const state: CanvasState & { centerX: number; centerY: number } = {
       panX, panY, zoom, tiles, nextZ, centerX, centerY,
-      connections,
+      connections, shapes,
     }
     window.shellApi.canvasSaveState(state)
   }, 500)
@@ -643,6 +728,47 @@ function applyCanvasTransform(): void {
   tileLayer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`
   tileLayer.style.transformOrigin = '0 0'
   drawConnections()
+  drawShapes()
+}
+
+// Phase 3-19: Drawing layer
+function drawShapes(): void {
+  if (!drawLayer) return
+  const rect = panelViewer.getBoundingClientRect()
+  drawLayer.setAttribute('width', String(rect.width))
+  drawLayer.setAttribute('height', String(rect.height))
+  drawLayer.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`)
+  while (drawLayer.firstChild) drawLayer.removeChild(drawLayer.firstChild)
+  const allShapes = currentShape ? [...shapes, currentShape] : shapes
+  for (const shape of allShapes) {
+    if (shape.points.length < 2) continue
+    const d = shape.points
+      .map(([cx, cy], i) => {
+        const sx = cx * zoom + panX
+        const sy = cy * zoom + panY
+        return `${i === 0 ? 'M' : 'L'} ${sx.toFixed(1)} ${sy.toFixed(1)}`
+      })
+      .join(' ')
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    path.setAttribute('d', d)
+    path.setAttribute('stroke', shape.color)
+    path.setAttribute('stroke-width', String(shape.width))
+    path.classList.add('shape')
+    path.setAttribute('data-shape-id', shape.id)
+    path.addEventListener('click', (e) => {
+      if (drawMode) return
+      e.stopPropagation()
+      shapes = shapes.filter((s) => s.id !== shape.id)
+      drawShapes()
+      scheduleSave()
+    })
+    drawLayer.appendChild(path)
+  }
+}
+
+function toggleDrawMode(): void {
+  drawMode = !drawMode
+  document.body.classList.toggle('draw-mode', drawMode)
 }
 
 // ─── Phase 3-15: Connection rendering ────────────────────────────────
@@ -945,6 +1071,8 @@ async function handleCliMethod(method: string, params: Record<string, unknown>):
       ;(wv.webview as any).send('cmux:write-to-pty', String(params.text ?? ''))
       return { ok: true }
     }
+    case 'events.list':
+      return canvasEventLog.slice(-50).reverse()
     case 'roles.list':
       return roles
     case 'role.assign': {
@@ -1004,6 +1132,7 @@ function completeDraftingTo(toId: string): void {
   }
   connections.push(conn)
   cancelDrafting()
+  logCanvasEvent({ ts: Date.now(), kind: 'connection.create', payload: { from: conn.from, to: conn.to } })
   scheduleSave()
 }
 
@@ -1073,6 +1202,7 @@ function createCanvasTile(
   tiles.push(tile)
   renderTileElement(tile)
   bringToFront(tile.id)
+  logCanvasEvent({ ts: Date.now(), kind: 'tile.create', tileId: tile.id, tileName: tileLabel(tile), payload: { type } })
 
   // If in fullscreen, make new tile fullscreen and show it
   if (isFullscreen) {
@@ -1581,6 +1711,18 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
         tile.cwd = newCwd
         scheduleSave()
       }
+    }
+    // Phase 4b-34/35: Terminal lifecycle events (OSC 133)
+    if (event.channel === 'terminal-event') {
+      const kind = event.args?.[0] as string
+      const payload = event.args?.[1]
+      logCanvasEvent({
+        ts: Date.now(),
+        kind: `terminal.${kind}`,
+        tileId: tile.id,
+        tileName: tileLabel(tile),
+        payload,
+      })
     }
   })
 }

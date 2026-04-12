@@ -19,6 +19,7 @@ declare global {
       offPtyExit: (cb: (payload: { sessionId: string; exitCode: number }) => void) => void
       notifyPtySessionId: (id: string) => void
       notifyTerminalCwd: (cwd: string) => void
+      notifyTerminalEvent: (kind: string, payload?: unknown) => void
       cmuxExec: (args: string[]) => Promise<{ ok: boolean; output?: string; error?: string }>
       onCmuxWrite: (cb: (text: string) => void) => void
       offCmuxWrite: (cb: (text: string) => void) => void
@@ -558,6 +559,20 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
               const decoded = decodeURIComponent(osc7Match[1])
               window.api.notifyTerminalCwd(decoded)
             } catch {}
+          }
+          // Phase 4b-35: OSC 133 prompt markers (A/B/C/D)
+          const osc133 = payload.data.match(/\x1b\]133;([ABCD])(?:;(\d+))?(?:\x07|\x1b\\)/g)
+          if (osc133) {
+            for (const seq of osc133) {
+              const m = seq.match(/133;([ABCD])(?:;(\d+))?/)
+              if (!m) continue
+              const kind = m[1]
+              const code = m[2]
+              if (kind === 'A') window.api.notifyTerminalEvent('prompt-start')
+              else if (kind === 'B') window.api.notifyTerminalEvent('prompt-end')
+              else if (kind === 'C') window.api.notifyTerminalEvent('command-start')
+              else if (kind === 'D') window.api.notifyTerminalEvent('command-end', code ? parseInt(code, 10) : 0)
+            }
           }
           const urlMatch = payload.data.match(/kanvas-open:(https?:\/\/[^\x07\x1b]+)/)
           if (urlMatch) {

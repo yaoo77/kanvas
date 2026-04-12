@@ -103,6 +103,7 @@ contextBridge.exposeInMainWorld('api', {
   offPtyExit: (cb: (payload: { sessionId: string; exitCode: number }) => void) => { exitListeners.delete(cb) },
   notifyPtySessionId: (id: string) => ipcRenderer.sendToHost('pty-session-id', id),
   notifyTerminalCwd: (cwd: string) => ipcRenderer.sendToHost('terminal-cwd-update', cwd),
+  notifyTerminalEvent: (kind: string, payload?: unknown) => ipcRenderer.sendToHost('terminal-event', kind, payload),
 
   onCdTo: (cb: (path: string) => void) => { cdToListeners.add(cb) },
   offCdTo: (cb: (path: string) => void) => { cdToListeners.delete(cb) },
