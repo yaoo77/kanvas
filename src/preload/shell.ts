@@ -85,6 +85,8 @@ contextBridge.exposeInMainWorld('shellApi', {
   showContextMenu: (items: Array<{ label: string; id: string }>) =>
     ipcRenderer.invoke('context-menu:show', items),
   openExternal: (url: string) => ipcRenderer.send('shell:open-external', url),
+  readDir: (path: string) => ipcRenderer.invoke('fs:readdir', path),
+  gitExec: (args: string[]) => ipcRenderer.invoke('git:exec', args),
   rolesLoad: () => ipcRenderer.invoke('roles:load'),
   rolesSave: (roles: unknown) => ipcRenderer.invoke('roles:save', roles),
   keymapLoad: () => ipcRenderer.invoke('keymap:load'),

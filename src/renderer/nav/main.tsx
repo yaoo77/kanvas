@@ -346,6 +346,68 @@ function FilesPanel({ entries, onSelect, searchQuery, changedFiles, workspacePat
   )
 }
 
+/* ── Phase 5-8: Compact tile list for unified nav ── */
+
+function TileMiniList() {
+  const [tiles, setTiles] = useState<TileInfo[]>([])
+  const [collapsed, setCollapsed] = useState(false)
+
+  useEffect(() => {
+    const refresh = async () => {
+      try {
+        const list = await window.api.listTiles()
+        setTiles(list || [])
+      } catch { setTiles([]) }
+    }
+    refresh()
+    const interval = setInterval(refresh, 3000)
+    return () => clearInterval(interval)
+  }, [])
+
+  if (tiles.length === 0) return null
+
+  return (
+    <div style={{ borderBottom: '1px solid #333', flexShrink: 0 }}>
+      <div
+        onClick={() => setCollapsed(!collapsed)}
+        style={{ padding: '4px 8px', fontSize: 10, color: '#888', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, userSelect: 'none' }}
+      >
+        <span style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0)', transition: 'transform 0.15s', display: 'inline-block' }}>{'\u25BC'}</span>
+        OPEN TILES ({tiles.length})
+      </div>
+      {!collapsed && (
+        <div style={{ paddingBottom: 4 }}>
+          {tiles.map(tile => (
+            <div
+              key={tile.id}
+              onClick={() => window.api.focusTile(tile.id)}
+              style={{
+                padding: '3px 8px 3px 16px',
+                fontSize: 11,
+                color: tile.focused ? '#e0e0e0' : '#aaa',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                background: tile.focused ? 'rgba(74,158,255,0.1)' : 'transparent',
+                borderRadius: 3,
+                margin: '0 4px',
+              }}
+            >
+              <span style={{ fontSize: 10 }}>{tileIcon(tile.type)}</span>
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tileLabel(tile)}</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); window.api.closeTile(tile.id) }}
+                style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 12, padding: '0 2px', lineHeight: 1 }}
+              >{'\u00D7'}</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ── Sessions Panel ── */
 
 interface TileInfo {
@@ -972,6 +1034,7 @@ function App() {
       )}
       {tab === 'files' ? (
         <>
+          <TileMiniList />
           <FilesPanel entries={entries} onSelect={handleSelect} searchQuery={searchQuery} changedFiles={changedFiles} workspacePath={workspace} onRefresh={() => { if (workspace) loadRoot(workspace) }} selectedPaths={selectedPaths} />
           {selectedPaths.size > 0 && (
             <div style={{ padding: '6px 12px', borderTop: '1px solid #333', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>

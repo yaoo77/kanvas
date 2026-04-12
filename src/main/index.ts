@@ -12,7 +12,7 @@ import {
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 import { registerFsHandlers } from './ipc/fs-handlers'
-import { registerPtyHandlers } from './ipc/pty-handlers'
+import { registerPtyHandlers, saveAllScrollback } from './ipc/pty-handlers'
 import { registerImageHandlers } from './ipc/image-handlers'
 import { startWatcher } from './watcher'
 import { registerCmuxHandlers } from './ipc/cmux-handlers'
@@ -603,7 +603,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', () => {
-  // Cleanup PTY sessions, etc.
+  saveAllScrollback()
 })
 
 app.on('window-all-closed', () => {
