@@ -89,6 +89,9 @@ contextBridge.exposeInMainWorld('shellApi', {
   rolesSave: (roles: unknown) => ipcRenderer.invoke('roles:save', roles),
   keymapLoad: () => ipcRenderer.invoke('keymap:load'),
   keymapSave: (k: unknown) => ipcRenderer.invoke('keymap:save', k),
+  floorsList: () => ipcRenderer.invoke('floors:list'),
+  floorsCreate: (opts: unknown) => ipcRenderer.invoke('floors:create', opts),
+  floorsRemove: (id: string) => ipcRenderer.invoke('floors:remove', id),
   onCliRequest: (cb: (id: string, method: string, params: unknown) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, id: string, method: string, params: unknown) => cb(id, method, params)
     ipcRenderer.on('cli:request', handler)

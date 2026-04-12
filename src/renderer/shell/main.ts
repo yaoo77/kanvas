@@ -37,6 +37,9 @@ declare global {
       cliRespond: (id: string, result: unknown, error?: string | null) => void
       keymapLoad: () => Promise<Record<string, string>>
       keymapSave: (k: Record<string, string>) => Promise<void>
+      floorsList: () => Promise<Array<{ id: string; name: string; branch: string; worktreeDir: string; sourceDir: string; createdAt: string }>>
+      floorsCreate: (opts: { sourceDir: string; name: string; canvasState: unknown }) => Promise<{ ok: boolean; id?: string; branch?: string; worktreeDir?: string; error?: string }>
+      floorsRemove: (id: string) => Promise<{ ok: boolean; error?: string }>
       getDragPaths: () => Promise<string[]>
       // cmux internal events
       onCmuxSplit: (cb: (direction: string) => void) => () => void
@@ -272,6 +275,56 @@ async function init(): Promise<void> {
   try {
     roles = await window.shellApi.rolesLoad()
   } catch { roles = [] }
+
+  // Phase 4-23: React Grab (Cmd+Shift+G) — capture hovered element from a browser tile
+  // and send its innerText/outerHTML to the most recently focused terminal tile.
+  let lastFocusedTerminalId: string | null = null
+  // Track terminal focus
+  document.addEventListener('focusin', () => {
+    if (focusedTileId) {
+      const t = tiles.find((x) => x.id === focusedTileId)
+      if (t?.type === 'terminal') lastFocusedTerminalId = t.id
+    }
+  })
+  document.addEventListener('keydown', async (e) => {
+    if (!(e.metaKey && e.shiftKey && (e.key === 'g' || e.key === 'G'))) return
+    e.preventDefault()
+    if (!focusedTileId) return
+    const tile = tiles.find((x) => x.id === focusedTileId)
+    if (!tile || tile.type !== 'browser') return
+    const wv = webviews.get(tile.id)
+    if (!wv) return
+    try {
+      const result = await (wv.webview as any).executeJavaScript(`
+        (function() {
+          const el = document.activeElement || document.documentElement;
+          const rect = el.getBoundingClientRect();
+          return {
+            tag: el.tagName,
+            text: (el.innerText || '').slice(0, 2000),
+            html: el.outerHTML.slice(0, 4000),
+            url: location.href,
+          }
+        })()
+      `)
+      // Find target terminal (last focused, or first connected terminal)
+      let targetId = lastFocusedTerminalId
+      if (!targetId) {
+        const conn = connections.find((c) => c.from === tile.id || c.to === tile.id)
+        if (conn) {
+          const other = conn.from === tile.id ? conn.to : conn.from
+          const otherTile = tiles.find((t) => t.id === other)
+          if (otherTile?.type === 'terminal') targetId = other
+        }
+      }
+      if (!targetId) return
+      const targetWv = webviews.get(targetId)
+      if (!targetWv) return
+      const blob = `\n[from ${result.url}]\n${result.text}\n`
+      ;(targetWv.webview as any).send('cmux:write-to-pty', blob)
+      logCanvasEvent({ ts: Date.now(), kind: 'react-grab', tileId: tile.id, payload: { url: result.url, tag: result.tag } })
+    } catch {}
+  })
 
   // Phase 4-22: Keyboard shortcut engine with chord support
   let keymap: Record<string, string> = {}
@@ -1073,6 +1126,28 @@ async function handleCliMethod(method: string, params: Record<string, unknown>):
     }
     case 'events.list':
       return canvasEventLog.slice(-50).reverse()
+    case 'floors.list':
+      return await window.shellApi.floorsList()
+    case 'floors.create': {
+      const sourceDir = String(params.sourceDir ?? '') || (await window.shellApi.getWorkspacePath()) || ''
+      if (!sourceDir) throw new Error('sourceDir required')
+      const name = String(params.name ?? 'floor')
+      const result = await window.shellApi.floorsCreate({
+        sourceDir,
+        name,
+        canvasState: { panX, panY, zoom, tiles, nextZ, connections, shapes },
+      })
+      if (!result.ok) throw new Error(result.error ?? 'create failed')
+      logCanvasEvent({ ts: Date.now(), kind: 'floor.create', payload: { id: result.id, name } })
+      return result
+    }
+    case 'floors.remove': {
+      const id = String(params.id ?? '')
+      if (!id) throw new Error('id required')
+      const result = await window.shellApi.floorsRemove(id)
+      logCanvasEvent({ ts: Date.now(), kind: 'floor.remove', payload: { id } })
+      return result
+    }
     case 'roles.list':
       return roles
     case 'role.assign': {

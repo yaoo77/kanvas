@@ -112,6 +112,12 @@ async function main() {
       case 'events':
         result = await request('events.list')
         break
+      case 'floors':
+        if (rest[0] === 'list' || !rest[0]) result = await request('floors.list')
+        else if (rest[0] === 'create') result = await request('floors.create', { name: rest[1] || 'floor', sourceDir: rest[2] })
+        else if (rest[0] === 'remove') result = await request('floors.remove', { id: rest[1] })
+        else usage()
+        break
       default:
         usage()
     }

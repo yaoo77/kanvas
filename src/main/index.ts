@@ -286,6 +286,69 @@ function registerShellIpc(): void {
     writeFileSync(join(dir, 'canvas-state.json'), JSON.stringify(state))
   })
 
+  // Phase 4-21: Floors — create/list/remove git worktrees and snapshot canvas state
+  ipcMain.handle('floors:list', async () => {
+    const { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } = require('fs')
+    const { join } = require('path')
+    const dir = join(app.getPath('home'), '.kanvas', 'floors')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    const manifestFp = join(dir, 'manifest.json')
+    if (!existsSync(manifestFp)) writeFileSync(manifestFp, '[]')
+    try { return JSON.parse(readFileSync(manifestFp, 'utf-8')) } catch { return [] }
+  })
+  ipcMain.handle('floors:create', async (_e, opts: { sourceDir: string; name: string; canvasState: unknown }) => {
+    const { execSync } = require('child_process')
+    const { writeFileSync, mkdirSync, existsSync, readFileSync } = require('fs')
+    const { join, basename } = require('path')
+    const floorsDir = join(app.getPath('home'), '.kanvas', 'floors')
+    if (!existsSync(floorsDir)) mkdirSync(floorsDir, { recursive: true })
+    const floorId = `floor-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const worktreeDir = join(floorsDir, floorId)
+    const branch = `kanvas/${opts.name.replace(/\s+/g, '-').toLowerCase()}-${floorId.slice(-4)}`
+    try {
+      execSync(`git -C "${opts.sourceDir}" worktree add -b "${branch}" "${worktreeDir}"`, { stdio: 'pipe' })
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
+    // Save canvas state snapshot
+    const stateFp = join(floorsDir, `${floorId}-canvas.json`)
+    writeFileSync(stateFp, JSON.stringify(opts.canvasState))
+    // Update manifest
+    const manifestFp = join(floorsDir, 'manifest.json')
+    let manifest: any[] = []
+    try { manifest = JSON.parse(readFileSync(manifestFp, 'utf-8')) } catch { manifest = [] }
+    manifest.push({
+      id: floorId,
+      name: opts.name,
+      branch,
+      worktreeDir,
+      sourceDir: opts.sourceDir,
+      createdAt: new Date().toISOString(),
+    })
+    writeFileSync(manifestFp, JSON.stringify(manifest, null, 2))
+    return { ok: true, id: floorId, branch, worktreeDir, canvasStateFp: stateFp }
+  })
+  ipcMain.handle('floors:remove', async (_e, floorId: string) => {
+    const { execSync } = require('child_process')
+    const { readFileSync, writeFileSync, existsSync, rmSync } = require('fs')
+    const { join } = require('path')
+    const floorsDir = join(app.getPath('home'), '.kanvas', 'floors')
+    const manifestFp = join(floorsDir, 'manifest.json')
+    let manifest: any[] = []
+    try { manifest = JSON.parse(readFileSync(manifestFp, 'utf-8')) } catch { return { ok: false, error: 'no manifest' } }
+    const entry = manifest.find((f) => f.id === floorId)
+    if (!entry) return { ok: false, error: 'not found' }
+    try {
+      execSync(`git -C "${entry.sourceDir}" worktree remove --force "${entry.worktreeDir}"`, { stdio: 'pipe' })
+    } catch {}
+    if (existsSync(join(floorsDir, `${floorId}-canvas.json`))) {
+      try { rmSync(join(floorsDir, `${floorId}-canvas.json`)) } catch {}
+    }
+    manifest = manifest.filter((f) => f.id !== floorId)
+    writeFileSync(manifestFp, JSON.stringify(manifest, null, 2))
+    return { ok: true }
+  })
+
   // Phase 4-24: kanvas CLI — Unix domain socket JSON RPC
   setupKanvasCliServer()
 }
