@@ -5,15 +5,59 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>kanvas</title>
   <style>
+    /* Phase 1b-30: Theme system via CSS variables */
+    :root {
+      --bg-base: #121212;
+      --bg-panel: #1a1a1a;
+      --bg-surface: #1e1e1e;
+      --bg-elevated: #252526;
+      --bg-hover: #333;
+      --bg-active: #3a3a3a;
+      --bg-overlay: rgba(30, 30, 30, 0.9);
+      --bg-overlay-opaque: rgba(30, 30, 30, 0.95);
+      --text-primary: #e0e0e0;
+      --text-secondary: #aaa;
+      --text-muted: #888;
+      --text-dim: #666;
+      --text-faint: #555;
+      --border: #333;
+      --border-strong: #444;
+      --border-subtle: #444;
+      --accent: #4a9eff;
+      --danger: #c53030;
+      --danger-text: #f87171;
+    }
+    body[data-theme="light"] {
+      --bg-base: #f5f5f5;
+      --bg-panel: #ebebeb;
+      --bg-surface: #ffffff;
+      --bg-elevated: #f0f0f0;
+      --bg-hover: #e0e0e0;
+      --bg-active: #d4d4d4;
+      --bg-overlay: rgba(250, 250, 250, 0.92);
+      --bg-overlay-opaque: rgba(250, 250, 250, 0.98);
+      --text-primary: #222;
+      --text-secondary: #555;
+      --text-muted: #777;
+      --text-dim: #999;
+      --text-faint: #bbb;
+      --border: #d0d0d0;
+      --border-strong: #b0b0b0;
+      --border-subtle: #c4c4c4;
+      --accent: #2563eb;
+      --danger: #dc2626;
+      --danger-text: #dc2626;
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { height: 100%; overflow: hidden; background: #121212; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    html, body { height: 100%; overflow: hidden; background: var(--bg-base); color: var(--text-primary); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 
     /* Titlebar */
-    #titlebar { -webkit-app-region: drag; height: 40px; background: #1a1a1a; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #555; }
+    #titlebar { -webkit-app-region: drag; height: 40px; background: var(--bg-panel); display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--text-faint); }
 
     /* Panels layout */
     #panels { display: flex; flex: 1; height: calc(100vh - 40px); }
-    #panel-nav { flex: 0 0 260px; background: #1e1e1e; border-right: 1px solid #333; overflow: hidden; display: flex; flex-direction: column; }
+    #panel-nav { flex: 0 0 260px; background: var(--bg-surface); border-right: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; }
     #nav-resize { width: 6px; cursor: col-resize; background: transparent; flex-shrink: 0; }
     #nav-resize:hover { background: #4a9eff; }
     #nav-resize:active { background: #4a9eff; }
@@ -25,19 +69,40 @@
     /* Tile layer */
     #tile-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
 
-    /* Canvas tiles */
+    /* Phase 3-15: Connection layer (SVG overlay, above grid, below tiles) */
+    #conn-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+    #conn-layer .conn-line { fill: none; stroke: rgba(74,158,255,0.65); stroke-width: 2.5; pointer-events: stroke; cursor: pointer; }
+    #conn-layer .conn-line.drafting { stroke-dasharray: 6 6; stroke: rgba(255,255,255,0.5); }
+
+    /* Phase 3-19: Drawing layer (free-draw shapes) */
+    #draw-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+    body.draw-mode #draw-layer { pointer-events: auto; cursor: crosshair; }
+    body.draw-mode #tile-layer { pointer-events: none; }
+    #draw-layer .shape { fill: none; stroke: rgba(255,200,80,0.9); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; pointer-events: stroke; cursor: pointer; }
+    #draw-mode-indicator {
+      position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+      background: rgba(255,200,80,0.9); color: #222; padding: 4px 12px;
+      border-radius: 4px; font-size: 11px; z-index: 10; display: none;
+    }
+    body.draw-mode #draw-mode-indicator { display: block; }
+
+    /* Canvas tiles (Phase 2-9: embedded visual language) */
     .canvas-tile {
       position: absolute; pointer-events: auto; display: flex; flex-direction: column;
-      border: 1px solid #333; border-radius: 6px; overflow: hidden; background: #1e1e1e;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-surface);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.3);
+      transition: box-shadow 150ms ease, border-color 150ms ease;
     }
-    .canvas-tile.focused { border-color: #4a9eff; box-shadow: 0 2px 12px rgba(74,158,255,0.2); }
-    .canvas-tile.selected { border-color: #4a9eff; }
+    .canvas-tile.focused {
+      border-color: var(--accent);
+      box-shadow: 0 14px 30px rgba(0,0,0,0.45), 0 2px 12px rgba(74,158,255,0.28);
+    }
+    .canvas-tile.selected { border-color: var(--accent); }
 
     /* Tile titlebar */
     .tile-title-bar {
       height: 28px; display: flex; align-items: center; padding: 0 6px; gap: 4px;
-      background: #252526; cursor: grab; user-select: none; flex-shrink: 0;
+      background: var(--bg-elevated); cursor: grab; user-select: none; flex-shrink: 0;
     }
     .tile-title-bar:active { cursor: grabbing; }
     .tile-title-text { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -49,7 +114,7 @@
       width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
       background: transparent; border: none; color: #666; cursor: pointer; border-radius: 3px;
     }
-    .tile-btn:hover { background: #333; color: #ccc; }
+    .tile-btn:hover { background: var(--border); color: #ccc; }
     .tile-btn.close:hover { background: #c53030; color: #fff; }
 
     /* Tile content */
@@ -75,8 +140,8 @@
     /* Browser tile nav */
     .tile-nav-group { display: flex; align-items: center; gap: 2px; margin-right: 4px; }
     .tile-nav-btn { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; background: transparent; border: none; color: #888; cursor: pointer; border-radius: 3px; font-size: 11px; }
-    .tile-nav-btn:hover { background: #333; color: #ccc; }
-    .tile-url-input { flex: 1; background: #1e1e1e; border: 1px solid #444; color: #ccc; padding: 2px 6px; border-radius: 3px; font-size: 11px; outline: none; }
+    .tile-nav-btn:hover { background: var(--border); color: #ccc; }
+    .tile-url-input { flex: 1; background: var(--bg-surface); border: 1px solid #444; color: #ccc; padding: 2px 6px; border-radius: 3px; font-size: 11px; outline: none; }
     .tile-url-input:focus { border-color: #4a9eff; }
 
     /* Zoom controls */
@@ -91,14 +156,14 @@
       font-size: 16px; width: 32px; height: 28px; display: flex;
       align-items: center; justify-content: center; -webkit-app-region: no-drag;
     }
-    #zoom-controls button:hover { background: #333; color: #fff; }
+    #zoom-controls button:hover { background: var(--border); color: #fff; }
     #zoom-controls button:active { background: #444; }
     #zoom-reset { font-size: 12px; width: auto; padding: 0 8px; border-left: 1px solid #444; border-right: 1px solid #444; }
     #zoom-indicator { font-size: 12px; color: #999; pointer-events: none; }
 
     /* Nav toggle - fixed position in titlebar, after traffic lights */
     .panel-toggle { position: fixed; top: 8px; left: 78px; z-index: 50; background: none; border: none; color: #888; width: 28px; height: 28px; border-radius: 4px; cursor: pointer; font-size: 18px; -webkit-app-region: no-drag; display: flex; align-items: center; justify-content: center; }
-    .panel-toggle:hover { background: #333; color: #ccc; }
+    .panel-toggle:hover { background: var(--border); color: #ccc; }
 
     /* Workspace dropdown */
     #nav-toolbar { flex-shrink: 0; }
@@ -110,17 +175,89 @@
     /* Settings overlay */
     #settings-overlay { display: none; position: fixed; inset: 0; z-index: 100; }
     #settings-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.5); }
-    #settings-modal { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 600px; max-height: 80vh; background: #1e1e1e; border-radius: 8px; overflow: auto; }
+    #settings-modal { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 600px; max-height: 80vh; background: var(--bg-surface); border-radius: 8px; overflow: auto; }
 
     /* Loading */
     #loading-overlay { position: fixed; inset: 0; background: #121212; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 999; transition: opacity 0.3s; }
     #loading-overlay.hidden { opacity: 0; pointer-events: none; }
-    #loading-spinner { width: 32px; height: 32px; border: 3px solid #333; border-top-color: #4a9eff; border-radius: 50%; animation: spin 1s linear infinite; }
+    #loading-spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: #4a9eff; border-radius: 50%; animation: spin 1s linear infinite; }
     #loading-status { margin-top: 12px; font-size: 13px; color: #888; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Marquee selection */
     #marquee { position: absolute; border: 1px dashed #4a9eff; background: rgba(74,158,255,0.1); pointer-events: none; z-index: 3; display: none; }
+
+    /* New-tile FAB (top-right) */
+    #new-tile-fab {
+      position: absolute; top: 12px; right: 12px; z-index: 5;
+      background: rgba(30, 30, 30, 0.9); border: 1px solid #444; border-radius: 6px;
+      color: #ccc; font-size: 18px; width: 32px; height: 32px; display: flex;
+      align-items: center; justify-content: center; cursor: pointer;
+      backdrop-filter: blur(8px);
+    }
+    #new-tile-fab:hover { background: var(--border); color: #fff; border-color: #666; }
+    #new-tile-menu {
+      position: absolute; top: 52px; right: 12px; z-index: 6;
+      background: rgba(30, 30, 30, 0.95); border: 1px solid #555; border-radius: 6px;
+      padding: 4px; display: none; flex-direction: column; min-width: 160px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4); backdrop-filter: blur(8px);
+    }
+    #new-tile-menu.open { display: flex; }
+    #new-tile-menu button {
+      background: transparent; border: none; color: #e0e0e0; padding: 8px 12px;
+      text-align: left; cursor: pointer; border-radius: 4px; font-size: 12px;
+      font-family: inherit;
+    }
+    #new-tile-menu button:hover { background: #3a3a3a; }
+
+    /* Tile rename popover */
+    #tile-rename-popover {
+      position: fixed; z-index: 9999; background: var(--bg-surface); border: 1px solid #555;
+      border-radius: 6px; padding: 8px; display: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    #tile-rename-popover.open { display: block; }
+    #tile-rename-popover input {
+      background: #121212; border: 1px solid #444; color: #e0e0e0;
+      padding: 6px 10px; border-radius: 4px; font-size: 12px; width: 200px;
+      outline: none; font-family: inherit;
+    }
+    #tile-rename-popover input:focus { border-color: #4a9eff; }
+
+    /* Tile context menu */
+    #tile-ctx-menu {
+      position: fixed; z-index: 9999; background: rgba(30,30,30,0.95);
+      border: 1px solid #555; border-radius: 6px; padding: 4px; display: none;
+      flex-direction: column; min-width: 160px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5); backdrop-filter: blur(8px);
+    }
+    #tile-ctx-menu.open { display: flex; }
+    #tile-ctx-menu button {
+      background: transparent; border: none; color: #e0e0e0; padding: 6px 12px;
+      text-align: left; cursor: pointer; border-radius: 4px; font-size: 12px;
+      font-family: inherit;
+    }
+    #tile-ctx-menu button:hover { background: #3a3a3a; }
+    #tile-ctx-menu .divider { height: 1px; background: #444; margin: 4px 0; }
+
+    /* Phase 2-11: right sidebar (canvas-level terminal) */
+    #panel-right { flex: 0 0 360px; background: var(--bg-surface); border-left: 1px solid var(--border); overflow: hidden; display: none; flex-direction: column; }
+    #panel-right.open { display: flex; }
+    #right-toggle {
+      position: fixed; top: 8px; right: 52px; z-index: 60;
+      background: none; border: none; color: var(--text-muted);
+      width: 28px; height: 28px; border-radius: 4px; cursor: pointer;
+      font-size: 14px; -webkit-app-region: no-drag;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #right-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+    #right-toggle.active { background: var(--bg-active); color: var(--text-primary); }
+    #right-terminal-host { flex: 1; overflow: hidden; }
+    #right-terminal-host webview { width: 100%; height: 100%; border: none; }
+    #right-terminal-header {
+      padding: 6px 10px; font-size: 11px; color: var(--text-muted);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -142,15 +279,31 @@
     <div id="nav-resize"></div>
     <div id="panel-viewer">
       <canvas id="grid-canvas"></canvas>
+      <svg id="conn-layer" xmlns="http://www.w3.org/2000/svg"></svg>
+      <svg id="draw-layer" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="draw-mode-indicator">Draw mode — click to draw, ⌘D to exit</div>
       <div id="tile-layer"></div>
       <div id="marquee"></div>
+      <button type="button" id="new-tile-fab" title="New tile">+</button>
+      <div id="new-tile-menu">
+        <button type="button" data-kind="terminal">+ Terminal</button>
+        <button type="button" data-kind="note">+ Note</button>
+        <button type="button" data-kind="browser">+ Browser</button>
+      </div>
       <div id="zoom-controls">
         <button id="zoom-out" title="Zoom Out">−</button>
         <button id="zoom-reset" title="Reset Zoom"><span id="zoom-indicator">100%</span></button>
         <button id="zoom-in" title="Zoom In">+</button>
       </div>
     </div>
+    <div id="panel-right">
+      <div id="right-terminal-header">Canvas Terminal</div>
+      <div id="right-terminal-host"></div>
+    </div>
+    <div id="tile-rename-popover"><input type="text" id="tile-rename-input" /></div>
+    <div id="tile-ctx-menu"></div>
   </div>
+  <button type="button" id="right-toggle" title="Toggle Canvas Terminal">⎋</button>
 
   <div id="settings-overlay">
     <div id="settings-backdrop"></div>

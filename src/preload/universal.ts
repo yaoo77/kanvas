@@ -102,6 +102,8 @@ contextBridge.exposeInMainWorld('api', {
   onPtyExit: (cb: (payload: { sessionId: string; exitCode: number }) => void) => { exitListeners.add(cb) },
   offPtyExit: (cb: (payload: { sessionId: string; exitCode: number }) => void) => { exitListeners.delete(cb) },
   notifyPtySessionId: (id: string) => ipcRenderer.sendToHost('pty-session-id', id),
+  notifyTerminalCwd: (cwd: string) => ipcRenderer.sendToHost('terminal-cwd-update', cwd),
+  notifyTerminalEvent: (kind: string, payload?: unknown) => ipcRenderer.sendToHost('terminal-event', kind, payload),
 
   onCdTo: (cb: (path: string) => void) => { cdToListeners.add(cb) },
   offCdTo: (cb: (path: string) => void) => { cdToListeners.delete(cb) },
@@ -174,7 +176,10 @@ contextBridge.exposeInMainWorld('api', {
 
   // Clipboard & Finder
   copyToClipboard: (text: string) => { navigator.clipboard.writeText(text) },
-  showInFolder: (path: string) => ipcRenderer.send('shell:show-in-folder', path)
+  showInFolder: (path: string) => ipcRenderer.send('shell:show-in-folder', path),
+  openExternal: (url: string) => ipcRenderer.send('shell:open-external', url),
+  openPath: (path: string) => ipcRenderer.invoke('shell:open-path', path),
+  saveClipboardImageToTemp: () => ipcRenderer.invoke('clipboard:save-image-to-temp')
 })
 
 // Prevent ctrl+wheel from zooming the webview

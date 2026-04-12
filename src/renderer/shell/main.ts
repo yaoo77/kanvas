@@ -31,6 +31,15 @@ declare global {
       showContextMenu: (items: Array<{ label: string; id: string }>) => Promise<string | null>
       selectFile: (path: string) => void
       openExternal: (url: string) => void
+      rolesLoad: () => Promise<AgentRole[]>
+      rolesSave: (roles: AgentRole[]) => Promise<void>
+      onCliRequest: (cb: (id: string, method: string, params: unknown) => void) => () => void
+      cliRespond: (id: string, result: unknown, error?: string | null) => void
+      keymapLoad: () => Promise<Record<string, string>>
+      keymapSave: (k: Record<string, string>) => Promise<void>
+      floorsList: () => Promise<Array<{ id: string; name: string; branch: string; worktreeDir: string; sourceDir: string; createdAt: string }>>
+      floorsCreate: (opts: { sourceDir: string; name: string; canvasState: unknown }) => Promise<{ ok: boolean; id?: string; branch?: string; worktreeDir?: string; error?: string }>
+      floorsRemove: (id: string) => Promise<{ ok: boolean; error?: string }>
       getDragPaths: () => Promise<string[]>
       // cmux internal events
       onCmuxSplit: (cb: (direction: string) => void) => () => void
@@ -65,6 +74,10 @@ interface Tile {
   folderPath?: string
   url?: string
   sessionId?: string
+  customName?: string       // Phase 1b-28: user-set tile title
+  cwd?: string              // Phase 1b-27: remembered working directory
+  roleId?: string           // Phase 3-17: assigned agent role
+  noteContent?: string      // Phase 3-14: sticky note markdown body
 }
 
 interface CanvasState {
@@ -73,6 +86,34 @@ interface CanvasState {
   zoom: number
   tiles: Tile[]
   nextZ: number
+  connections?: Connection[]
+  shapes?: Shape[]
+}
+
+// Phase 3-15: Connection between two tiles
+interface Connection {
+  id: string
+  from: string           // source tile id
+  to: string             // target tile id
+  // future: label, style, direction
+}
+
+// Phase 3-17: Agent Role
+interface AgentRole {
+  id: string
+  name: string
+  icon: string
+  color: string
+  systemPrompt: string
+}
+
+// Phase 3-19: Hand-drawn shape on the canvas
+interface Shape {
+  id: string
+  kind: 'free'
+  points: Array<[number, number]>  // canvas-space coordinates
+  color: string
+  width: number
 }
 
 interface WebviewEntry {
@@ -105,6 +146,15 @@ const DEFAULT_SIZES: Record<Tile['type'], { w: number; h: number }> = {
   note:     { w: 400, h: 300 },
 }
 
+// Phase 1b-26: Remember last size per type (updated when a tile is resized)
+const lastTileSizes: Partial<Record<Tile['type'], { w: number; h: number }>> = {}
+function getDefaultSize(type: Tile['type']): { w: number; h: number } {
+  return lastTileSizes[type] ?? DEFAULT_SIZES[type]
+}
+function rememberTileSize(type: Tile['type'], w: number, h: number): void {
+  lastTileSizes[type] = { w, h }
+}
+
 // ─── State ───────────────────────────────────────────────────────────
 
 let viewConfig: ViewConfig = {}
@@ -112,6 +162,35 @@ const webviews = new Map<string, WebviewEntry>()
 const tileElements = new Map<string, HTMLDivElement>()
 
 let tiles: Tile[] = []
+let connections: Connection[] = []  // Phase 3-15
+let roles: AgentRole[] = []          // Phase 3-17
+let shapes: Shape[] = []              // Phase 3-19
+let drawLayer: SVGSVGElement
+let drawMode = false
+let currentShape: Shape | null = null
+
+// Phase 4b-34: Canvas event log — ring buffer kept in memory
+interface CanvasEvent {
+  ts: number
+  kind: string
+  tileId?: string
+  tileName?: string
+  payload?: unknown
+}
+const canvasEventLog: CanvasEvent[] = []
+const CANVAS_EVENT_LOG_MAX = 500
+function logCanvasEvent(ev: CanvasEvent): void {
+  canvasEventLog.push(ev)
+  if (canvasEventLog.length > CANVAS_EVENT_LOG_MAX) canvasEventLog.shift()
+  renderEventLog()
+}
+function renderEventLog(): void {
+  // Minimal UI: the drawer is rendered elsewhere; this is a hook.
+  // A full UI is deferred to a later pass; the log is queryable via
+  // `kanvas events`.
+}
+let draftingConnection: { fromId: string } | null = null  // Phase 3-18 drag state
+let connLayer: SVGSVGElement
 let nextZ = 1
 let panX = 0
 let panY = 0
@@ -151,6 +230,8 @@ let zoomIndicator: HTMLDivElement
 async function init(): Promise<void> {
   viewConfig = await window.shellApi.getViewConfig()
 
+  connLayer = document.getElementById('conn-layer') as unknown as SVGSVGElement
+  drawLayer = document.getElementById('draw-layer') as unknown as SVGSVGElement
   gridCanvas = document.getElementById('grid-canvas') as HTMLCanvasElement
   gridCtx = gridCanvas.getContext('2d')!
   tileLayer = document.getElementById('tile-layer') as HTMLDivElement
@@ -187,6 +268,205 @@ async function init(): Promise<void> {
     overlay.style.display = action === 'open' ? 'block' : 'none'
     if (action === 'open' && !webviews.has('settings')) {
       createPanelWebview('settings', 'settings-modal')
+    }
+  })
+
+  // Phase 3-17: Load agent roles
+  try {
+    roles = await window.shellApi.rolesLoad()
+  } catch { roles = [] }
+
+  // Phase 4-23: React Grab (Cmd+Shift+G) — capture hovered element from a browser tile
+  // and send its innerText/outerHTML to the most recently focused terminal tile.
+  let lastFocusedTerminalId: string | null = null
+  // Track terminal focus
+  document.addEventListener('focusin', () => {
+    if (focusedTileId) {
+      const t = tiles.find((x) => x.id === focusedTileId)
+      if (t?.type === 'terminal') lastFocusedTerminalId = t.id
+    }
+  })
+  document.addEventListener('keydown', async (e) => {
+    if (!(e.metaKey && e.shiftKey && (e.key === 'g' || e.key === 'G'))) return
+    e.preventDefault()
+    if (!focusedTileId) return
+    const tile = tiles.find((x) => x.id === focusedTileId)
+    if (!tile || tile.type !== 'browser') return
+    const wv = webviews.get(tile.id)
+    if (!wv) return
+    try {
+      const result = await (wv.webview as any).executeJavaScript(`
+        (function() {
+          const el = document.activeElement || document.documentElement;
+          const rect = el.getBoundingClientRect();
+          return {
+            tag: el.tagName,
+            text: (el.innerText || '').slice(0, 2000),
+            html: el.outerHTML.slice(0, 4000),
+            url: location.href,
+          }
+        })()
+      `)
+      // Find target terminal (last focused, or first connected terminal)
+      let targetId = lastFocusedTerminalId
+      if (!targetId) {
+        const conn = connections.find((c) => c.from === tile.id || c.to === tile.id)
+        if (conn) {
+          const other = conn.from === tile.id ? conn.to : conn.from
+          const otherTile = tiles.find((t) => t.id === other)
+          if (otherTile?.type === 'terminal') targetId = other
+        }
+      }
+      if (!targetId) return
+      const targetWv = webviews.get(targetId)
+      if (!targetWv) return
+      const blob = `\n[from ${result.url}]\n${result.text}\n`
+      ;(targetWv.webview as any).send('cmux:write-to-pty', blob)
+      logCanvasEvent({ ts: Date.now(), kind: 'react-grab', tileId: tile.id, payload: { url: result.url, tag: result.tag } })
+    } catch {}
+  })
+
+  // Phase 4-22: Keyboard shortcut engine with chord support
+  let keymap: Record<string, string> = {}
+  try { keymap = await window.shellApi.keymapLoad() } catch { keymap = {} }
+  setupKeybindings(keymap)
+
+  // Phase 4-24: kanvas CLI request handler
+  window.shellApi.onCliRequest(async (id, method, params: any) => {
+    try {
+      const result = await handleCliMethod(method, params ?? {})
+      window.shellApi.cliRespond(id, result, null)
+    } catch (err) {
+      window.shellApi.cliRespond(id, null, (err as Error).message)
+    }
+  })
+
+  // Phase 1b-30: Theme system — load pref and apply
+  const savedTheme = (await window.shellApi.getPref('theme') as 'dark' | 'light' | undefined) ?? 'dark'
+  document.body.setAttribute('data-theme', savedTheme)
+  // Cmd+Shift+T toggles theme
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 't' || e.key === 'T')) {
+      e.preventDefault()
+      const cur = document.body.getAttribute('data-theme') ?? 'dark'
+      const next = cur === 'dark' ? 'light' : 'dark'
+      document.body.setAttribute('data-theme', next)
+      window.shellApi.setPref('theme', next)
+    }
+  })
+
+  // Phase 3-18: Cmd+L to start connection from focused tile
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'l' || e.key === 'L')) {
+      if (!focusedTileId) return
+      e.preventDefault()
+      startDrafting(focusedTileId)
+    }
+    if (e.key === 'Escape' && draftingConnection) {
+      cancelDrafting()
+    }
+    // Phase 3-19: Cmd+D to toggle draw mode
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'd' || e.key === 'D')) {
+      e.preventDefault()
+      toggleDrawMode()
+    }
+    if (e.key === 'Escape' && drawMode) toggleDrawMode()
+  })
+
+  // Phase 3-19: record freehand drawing when in draw mode
+  drawLayer.addEventListener('mousedown', (e) => {
+    if (!drawMode) return
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = panelViewer.getBoundingClientRect()
+    const cx = (e.clientX - rect.left - panX) / zoom
+    const cy = (e.clientY - rect.top - panY) / zoom
+    currentShape = {
+      id: `shape-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'free',
+      points: [[cx, cy]],
+      color: 'rgba(255,200,80,0.9)',
+      width: 3,
+    }
+    const onMove = (ev: MouseEvent) => {
+      if (!currentShape) return
+      const nx = (ev.clientX - rect.left - panX) / zoom
+      const ny = (ev.clientY - rect.top - panY) / zoom
+      const last = currentShape.points[currentShape.points.length - 1]
+      if (Math.abs(nx - last[0]) + Math.abs(ny - last[1]) > 1.5) {
+        currentShape.points.push([nx, ny])
+        drawShapes()
+      }
+    }
+    const onUp = () => {
+      if (currentShape && currentShape.points.length > 1) {
+        shapes.push(currentShape)
+        scheduleSave()
+      }
+      currentShape = null
+      drawShapes()
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  })
+  // Track mouse for drafting line
+  panelViewer.addEventListener('mousemove', (e) => {
+    if (draftingConnection) {
+      const rect = panelViewer.getBoundingClientRect()
+      draftingMouse = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+      drawConnections()
+    }
+  })
+  // Click on tile while drafting completes the connection
+  panelViewer.addEventListener('click', (e) => {
+    if (!draftingConnection) return
+    const target = (e.target as HTMLElement).closest('.canvas-tile') as HTMLElement | null
+    if (target) {
+      const id = target.getAttribute('data-tile-id')
+      if (id) {
+        completeDraftingTo(id)
+        return
+      }
+    }
+    cancelDrafting()
+  })
+
+  // Phase 2-11: Canvas-level right sidebar terminal (Cmd+J toggles)
+  const rightPanel = document.getElementById('panel-right')!
+  const rightToggle = document.getElementById('right-toggle')!
+  let rightTerminalCreated = false
+  const openRightPanel = () => {
+    rightPanel.classList.add('open')
+    rightToggle.classList.add('active')
+    if (!rightTerminalCreated) {
+      const host = document.getElementById('right-terminal-host')!
+      const config = viewConfig['terminalTile']
+      if (config) {
+        const wv = document.createElement('webview')
+        wv.setAttribute('src', config.src)
+        wv.setAttribute('preload', config.preload)
+        wv.setAttribute('webpreferences', 'contextIsolation=yes')
+        wv.style.cssText = 'width:100%;height:100%;border:none;'
+        host.appendChild(wv)
+        rightTerminalCreated = true
+      }
+    }
+  }
+  const closeRightPanel = () => {
+    rightPanel.classList.remove('open')
+    rightToggle.classList.remove('active')
+  }
+  rightToggle.addEventListener('click', () => {
+    if (rightPanel.classList.contains('open')) closeRightPanel()
+    else openRightPanel()
+  })
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'j' || e.key === 'J')) {
+      e.preventDefault()
+      if (rightPanel.classList.contains('open')) closeRightPanel()
+      else openRightPanel()
     }
   })
 
@@ -255,6 +535,33 @@ async function init(): Promise<void> {
   document.getElementById('zoom-out')!.addEventListener('click', (e) => { e.stopPropagation(); applyZoom(50) })
   document.getElementById('zoom-reset')!.addEventListener('click', (e) => { e.stopPropagation(); resetView() })
 
+  // Phase 1b-25: New-tile FAB (top-right) with dropdown menu
+  const fab = document.getElementById('new-tile-fab')!
+  const fabMenu = document.getElementById('new-tile-menu')!
+  fab.addEventListener('mousedown', (e) => e.stopPropagation())
+  fab.addEventListener('click', (e) => {
+    e.stopPropagation()
+    fabMenu.classList.toggle('open')
+  })
+  fabMenu.querySelectorAll('button[data-kind]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const kind = (btn as HTMLButtonElement).dataset.kind as Tile['type']
+      const rect = panelViewer.getBoundingClientRect()
+      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.terminal.w / 2
+      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.terminal.h / 2
+      if (kind === 'terminal' || kind === 'note' || kind === 'browser') {
+        createCanvasTile(kind, snapToGrid(cx), snapToGrid(cy))
+      }
+      fabMenu.classList.remove('open')
+    })
+  })
+  document.addEventListener('mousedown', (e) => {
+    if (!fabMenu.contains(e.target as Node) && !fab.contains(e.target as Node)) {
+      fabMenu.classList.remove('open')
+    }
+  })
+
   // Resize observer for grid redraw
   const ro = new ResizeObserver(() => drawGrid())
   ro.observe(panelViewer)
@@ -280,15 +587,32 @@ async function loadCanvasState(): Promise<void> {
   try {
     const raw = await window.shellApi.canvasLoadState()
     if (!raw || typeof raw !== 'object') return
-    const state = raw as CanvasState
+    const state = raw as CanvasState & { centerX?: number; centerY?: number }
     if (Array.isArray(state.tiles)) {
-      panX = state.panX ?? 0
-      panY = state.panY ?? 0
       zoom = state.zoom ?? 1
       nextZ = state.nextZ ?? 1
+      // Phase 2-8: prefer centerpoint-based viewport restoration if present
+      if (typeof state.centerX === 'number' && typeof state.centerY === 'number') {
+        const rect = panelViewer.getBoundingClientRect()
+        panX = rect.width / 2 - state.centerX * zoom
+        panY = rect.height / 2 - state.centerY * zoom
+      } else {
+        panX = state.panX ?? 0
+        panY = state.panY ?? 0
+      }
       for (const t of state.tiles) {
         tiles.push(t)
         renderTileElement(t)
+        // Phase 3-17: restore role badge
+        if (t.roleId) assignRoleToTile(t, t.roleId)
+      }
+      // Phase 3-15: restore connections
+      if (Array.isArray(state.connections)) {
+        connections = state.connections
+      }
+      // Phase 3-19: restore shapes
+      if (Array.isArray(state.shapes)) {
+        shapes = state.shapes
       }
       applyCanvasTransform()
     }
@@ -298,7 +622,14 @@ async function loadCanvasState(): Promise<void> {
 function scheduleSave(): void {
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(() => {
-    const state: CanvasState = { panX, panY, zoom, tiles, nextZ }
+    // Phase 2-8: save centerpoint so viewport survives window resize
+    const rect = panelViewer.getBoundingClientRect()
+    const centerX = (rect.width / 2 - panX) / zoom
+    const centerY = (rect.height / 2 - panY) / zoom
+    const state: CanvasState & { centerX: number; centerY: number } = {
+      panX, panY, zoom, tiles, nextZ, centerX, centerY,
+      connections, shapes,
+    }
     window.shellApi.canvasSaveState(state)
   }, 500)
 }
@@ -321,14 +652,36 @@ function drawGrid(): void {
   const majorStep = 80 * zoom // every 4th cell
   if (step < 4) return
 
+  // Phase 2b-32: fade dots as we zoom out
+  const zoomFade = Math.max(0, Math.min(1, (zoom - 0.4) / 0.3))
+  if (zoomFade <= 0) return
+
   const dotOffX = ((panX % step) + step) % step
   const dotOffY = ((panY % step) + step) % step
   const dotSize = Math.max(1, 1.5 * zoom)
 
+  // Phase 2b-32: compute tile cutout rects in screen space to skip dots under tiles
+  const cutouts: Array<[number, number, number, number]> = []
+  for (const t of tiles) {
+    const sx = t.x * zoom + panX
+    const sy = t.y * zoom + panY
+    const sw = t.width * zoom
+    const sh = t.height * zoom
+    if (sx + sw < 0 || sy + sh < 0 || sx > w || sy > h) continue
+    cutouts.push([sx, sy, sx + sw, sy + sh])
+  }
+  const isCutout = (x: number, y: number): boolean => {
+    for (const [x1, y1, x2, y2] of cutouts) {
+      if (x >= x1 && x <= x2 && y >= y1 && y <= y2) return true
+    }
+    return false
+  }
+
   // Minor dots
-  gridCtx.fillStyle = 'rgba(255,255,255,0.22)'
+  gridCtx.fillStyle = `rgba(255,255,255,${0.22 * zoomFade})`
   for (let x = dotOffX; x <= w; x += step) {
     for (let y = dotOffY; y <= h; y += step) {
+      if (isCutout(x, y)) continue
       gridCtx.fillRect(Math.round(x), Math.round(y), dotSize, dotSize)
     }
   }
@@ -336,9 +689,10 @@ function drawGrid(): void {
   // Major dots
   const majOffX = ((panX % majorStep) + majorStep) % majorStep
   const majOffY = ((panY % majorStep) + majorStep) % majorStep
-  gridCtx.fillStyle = 'rgba(255,255,255,0.40)'
+  gridCtx.fillStyle = `rgba(255,255,255,${0.40 * zoomFade})`
   for (let x = majOffX; x <= w; x += majorStep) {
     for (let y = majOffY; y <= h; y += majorStep) {
+      if (isCutout(x, y)) continue
       gridCtx.fillRect(Math.round(x), Math.round(y), dotSize, dotSize)
     }
   }
@@ -426,6 +780,466 @@ function updateZoomIndicator(): void {
 function applyCanvasTransform(): void {
   tileLayer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`
   tileLayer.style.transformOrigin = '0 0'
+  drawConnections()
+  drawShapes()
+}
+
+// Phase 3-19: Drawing layer
+function drawShapes(): void {
+  if (!drawLayer) return
+  const rect = panelViewer.getBoundingClientRect()
+  drawLayer.setAttribute('width', String(rect.width))
+  drawLayer.setAttribute('height', String(rect.height))
+  drawLayer.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`)
+  while (drawLayer.firstChild) drawLayer.removeChild(drawLayer.firstChild)
+  const allShapes = currentShape ? [...shapes, currentShape] : shapes
+  for (const shape of allShapes) {
+    if (shape.points.length < 2) continue
+    const d = shape.points
+      .map(([cx, cy], i) => {
+        const sx = cx * zoom + panX
+        const sy = cy * zoom + panY
+        return `${i === 0 ? 'M' : 'L'} ${sx.toFixed(1)} ${sy.toFixed(1)}`
+      })
+      .join(' ')
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    path.setAttribute('d', d)
+    path.setAttribute('stroke', shape.color)
+    path.setAttribute('stroke-width', String(shape.width))
+    path.classList.add('shape')
+    path.setAttribute('data-shape-id', shape.id)
+    path.addEventListener('click', (e) => {
+      if (drawMode) return
+      e.stopPropagation()
+      shapes = shapes.filter((s) => s.id !== shape.id)
+      drawShapes()
+      scheduleSave()
+    })
+    drawLayer.appendChild(path)
+  }
+}
+
+function toggleDrawMode(): void {
+  drawMode = !drawMode
+  document.body.classList.toggle('draw-mode', drawMode)
+}
+
+// ─── Phase 3-15: Connection rendering ────────────────────────────────
+
+function getTileCenter(tile: Tile): { x: number; y: number } {
+  return { x: tile.x + tile.width / 2, y: tile.y + tile.height / 2 }
+}
+
+function screenFromCanvas(cx: number, cy: number): { x: number; y: number } {
+  return { x: cx * zoom + panX, y: cy * zoom + panY }
+}
+
+function drawConnections(): void {
+  if (!connLayer) return
+  const rect = panelViewer.getBoundingClientRect()
+  connLayer.setAttribute('width', String(rect.width))
+  connLayer.setAttribute('height', String(rect.height))
+  connLayer.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`)
+  while (connLayer.firstChild) connLayer.removeChild(connLayer.firstChild)
+  for (const conn of connections) {
+    const from = tiles.find((t) => t.id === conn.from)
+    const to = tiles.find((t) => t.id === conn.to)
+    if (!from || !to) continue
+    const a = getTileCenter(from)
+    const b = getTileCenter(to)
+    const sa = screenFromCanvas(a.x, a.y)
+    const sb = screenFromCanvas(b.x, b.y)
+    const dx = sb.x - sa.x
+    const dy = sb.y - sa.y
+    const curvature = 0.3
+    const c1x = sa.x + dx * curvature
+    const c1y = sa.y + dy * 0.8
+    const c2x = sa.x + dx * (1 - curvature)
+    const c2y = sa.y + dy * 0.2
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    path.setAttribute('d', `M ${sa.x} ${sa.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${sb.x} ${sb.y}`)
+    path.classList.add('conn-line')
+    path.setAttribute('data-conn-id', conn.id)
+    path.addEventListener('click', (e) => {
+      e.stopPropagation()
+      connections = connections.filter((c) => c.id !== conn.id)
+      drawConnections()
+      scheduleSave()
+    })
+    connLayer.appendChild(path)
+  }
+  // Drafting line
+  if (draftingConnection && draftingMouse) {
+    const from = tiles.find((t) => t.id === draftingConnection.fromId)
+    if (from) {
+      const a = getTileCenter(from)
+      const sa = screenFromCanvas(a.x, a.y)
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      path.setAttribute('d', `M ${sa.x} ${sa.y} L ${draftingMouse.x} ${draftingMouse.y}`)
+      path.classList.add('conn-line', 'drafting')
+      connLayer.appendChild(path)
+    }
+  }
+}
+
+let draftingMouse: { x: number; y: number } | null = null
+
+// Phase 3-17: Assign a role to a tile and update badge
+function assignRoleToTile(tile: Tile, roleId: string | undefined): void {
+  tile.roleId = roleId
+  const el = tileElements.get(tile.id)
+  if (el) {
+    const existingBadge = el.querySelector('.role-badge')
+    if (existingBadge) existingBadge.remove()
+    if (roleId) {
+      const role = roles.find((r) => r.id === roleId)
+      if (role) {
+        const badge = document.createElement('span')
+        badge.className = 'role-badge'
+        badge.textContent = `${role.icon} ${role.name}`
+        badge.style.cssText = [
+          'display:inline-flex',
+          'align-items:center',
+          'gap:4px',
+          'padding:2px 6px',
+          'border-radius:4px',
+          'font-size:10px',
+          'margin-right:4px',
+          `background:${role.color}22`,
+          `color:${role.color}`,
+          'user-select:none',
+        ].join(';')
+        const titlebar = el.querySelector('.tile-titlebar')
+        const titleText = titlebar?.querySelector('.tile-title-text')
+        if (titleText && titlebar) {
+          titlebar.insertBefore(badge, titleText)
+        }
+      }
+    }
+  }
+  scheduleSave()
+  // If the tile has a terminal session, send a system note via cmux:write-to-pty
+  const role = roleId ? roles.find((r) => r.id === roleId) : null
+  if (role && tile.type === 'terminal') {
+    const wv = webviews.get(tile.id)
+    if (wv) {
+      const msg = `# Role: ${role.name}\n# ${role.systemPrompt}\n`
+      ;(wv.webview as any).send('cmux:write-to-pty', `\n# [kanvas] assigned role: ${role.name} (${role.icon})\n`)
+      void msg
+    }
+  }
+}
+
+// Phase 3-16: Send content to connected tiles (prompt + execute)
+function sendToConnected(tile: Tile): void {
+  const connIds = connections
+    .filter((c) => c.from === tile.id || c.to === tile.id)
+    .map((c) => (c.from === tile.id ? c.to : c.from))
+  if (connIds.length === 0) return
+  // Prompt user for message
+  const message = window.prompt(`Send to ${connIds.length} connected tile(s):`, '')
+  if (!message) return
+  for (const targetId of connIds) {
+    const target = tiles.find((t) => t.id === targetId)
+    if (!target) continue
+    if (target.type === 'terminal') {
+      const wv = webviews.get(target.id)
+      if (wv) (wv.webview as any).send('cmux:write-to-pty', message + '\r')
+    } else if (target.type === 'note') {
+      target.noteContent = (target.noteContent ?? '') + '\n' + message
+      // Trigger a redraw of the note textarea
+      const el = tileElements.get(target.id)
+      const ta = el?.querySelector('textarea') as HTMLTextAreaElement | null
+      if (ta) ta.value = target.noteContent
+      scheduleSave()
+    }
+  }
+}
+
+// Phase 4-22: Keybinding engine — supports chorded shortcuts like "mod+k mod+t"
+function normalizeKeyEvent(e: KeyboardEvent): string {
+  const parts: string[] = []
+  if (e.metaKey || e.ctrlKey) parts.push('mod')
+  if (e.altKey) parts.push('alt')
+  if (e.shiftKey) parts.push('shift')
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase()
+  parts.push(k)
+  return parts.join('+')
+}
+
+function dispatchKeybinding(action: string): boolean {
+  switch (action) {
+    case 'toggle-theme': {
+      const cur = document.body.getAttribute('data-theme') ?? 'dark'
+      const next = cur === 'dark' ? 'light' : 'dark'
+      document.body.setAttribute('data-theme', next)
+      window.shellApi.setPref('theme', next)
+      return true
+    }
+    case 'new-terminal': {
+      const rect = panelViewer.getBoundingClientRect()
+      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.terminal.w / 2
+      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.terminal.h / 2
+      createCanvasTile('terminal', snapToGrid(cx), snapToGrid(cy))
+      return true
+    }
+    case 'new-note': {
+      const rect = panelViewer.getBoundingClientRect()
+      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.note.w / 2
+      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.note.h / 2
+      createCanvasTile('note', snapToGrid(cx), snapToGrid(cy))
+      return true
+    }
+    case 'start-connection': {
+      if (focusedTileId) startDrafting(focusedTileId)
+      return true
+    }
+    case 'rename-tile': {
+      if (!focusedTileId) return false
+      const t = tiles.find((x) => x.id === focusedTileId)
+      if (!t) return false
+      const el = tileElements.get(t.id)
+      const rect = el?.getBoundingClientRect()
+      if (rect) openTileRenamePopover(t, rect.left, rect.top + 32)
+      return true
+    }
+    default:
+      return false
+  }
+}
+
+function setupKeybindings(keymap: Record<string, string>): void {
+  // Invert: key-sequence -> action
+  const sequences: Array<{ seq: string[]; action: string }> = []
+  for (const [action, binding] of Object.entries(keymap)) {
+    const parts = binding.split(/\s+/)
+    sequences.push({ seq: parts, action })
+  }
+  let pending: string[] = []
+  let pendingTimer: ReturnType<typeof setTimeout> | null = null
+
+  document.addEventListener('keydown', (e) => {
+    if (isInputFocused()) return
+    const key = normalizeKeyEvent(e)
+    pending.push(key)
+    if (pendingTimer) clearTimeout(pendingTimer)
+
+    // Check exact match
+    const match = sequences.find((s) => s.seq.length === pending.length && s.seq.every((k, i) => k === pending[i]))
+    if (match) {
+      if (dispatchKeybinding(match.action)) {
+        e.preventDefault()
+        pending = []
+        return
+      }
+    }
+    // Check if pending is a prefix of any longer sequence
+    const hasPrefix = sequences.some((s) => s.seq.length > pending.length && s.seq.slice(0, pending.length).every((k, i) => k === pending[i]))
+    if (hasPrefix) {
+      e.preventDefault()
+      pendingTimer = setTimeout(() => { pending = [] }, 800)
+    } else {
+      pending = []
+    }
+  })
+}
+
+// Phase 4-24: kanvas CLI method dispatcher
+async function handleCliMethod(method: string, params: Record<string, unknown>): Promise<unknown> {
+  switch (method) {
+    case 'tiles.list':
+      return tiles.map((t) => ({
+        id: t.id, type: t.type, name: tileLabel(t),
+        x: t.x, y: t.y, width: t.width, height: t.height,
+        cwd: t.cwd, filePath: t.filePath, url: t.url, roleId: t.roleId,
+      }))
+    case 'tile.get': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t) throw new Error('tile not found')
+      return { ...t, name: tileLabel(t) }
+    }
+    case 'tile.create': {
+      const type = (params.type as Tile['type']) ?? 'terminal'
+      const rect = panelViewer.getBoundingClientRect()
+      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES[type].w / 2
+      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES[type].h / 2
+      const tile = createCanvasTile(type, snapToGrid(cx), snapToGrid(cy))
+      if (typeof params.noteContent === 'string') tile.noteContent = params.noteContent
+      if (typeof params.cwd === 'string') tile.cwd = params.cwd
+      scheduleSave()
+      return { id: tile.id, type: tile.type }
+    }
+    case 'tile.focus': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t) throw new Error('tile not found')
+      bringToFront(t.id)
+      centerViewportOnTile(t, true)
+      return { ok: true }
+    }
+    case 'note.write': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t || t.type !== 'note') throw new Error('note not found')
+      t.noteContent = String(params.content ?? '')
+      const el = tileElements.get(t.id)
+      const ta = el?.querySelector('textarea') as HTMLTextAreaElement | null
+      if (ta) ta.value = t.noteContent
+      scheduleSave()
+      return { ok: true }
+    }
+    case 'note.append': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t || t.type !== 'note') throw new Error('note not found')
+      t.noteContent = (t.noteContent ?? '') + String(params.content ?? '')
+      const el = tileElements.get(t.id)
+      const ta = el?.querySelector('textarea') as HTMLTextAreaElement | null
+      if (ta) ta.value = t.noteContent
+      scheduleSave()
+      return { ok: true }
+    }
+    case 'note.read': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t || t.type !== 'note') throw new Error('note not found')
+      return t.noteContent ?? ''
+    }
+    case 'connection.create': {
+      const from = String(params.from ?? '')
+      const to = String(params.to ?? '')
+      if (!tiles.some((t) => t.id === from) || !tiles.some((t) => t.id === to)) {
+        throw new Error('tile not found')
+      }
+      const conn: Connection = {
+        id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        from, to,
+      }
+      connections.push(conn)
+      drawConnections()
+      scheduleSave()
+      return { id: conn.id }
+    }
+    case 'terminal.send': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t || t.type !== 'terminal') throw new Error('terminal tile not found')
+      const wv = webviews.get(t.id)
+      if (!wv) throw new Error('webview not ready')
+      ;(wv.webview as any).send('cmux:write-to-pty', String(params.text ?? ''))
+      return { ok: true }
+    }
+    case 'events.list':
+      return canvasEventLog.slice(-50).reverse()
+    case 'floors.list':
+      return await window.shellApi.floorsList()
+    case 'floors.create': {
+      const sourceDir = String(params.sourceDir ?? '') || (await window.shellApi.getWorkspacePath()) || ''
+      if (!sourceDir) throw new Error('sourceDir required')
+      const name = String(params.name ?? 'floor')
+      const result = await window.shellApi.floorsCreate({
+        sourceDir,
+        name,
+        canvasState: { panX, panY, zoom, tiles, nextZ, connections, shapes },
+      })
+      if (!result.ok) throw new Error(result.error ?? 'create failed')
+      logCanvasEvent({ ts: Date.now(), kind: 'floor.create', payload: { id: result.id, name } })
+      return result
+    }
+    case 'floors.remove': {
+      const id = String(params.id ?? '')
+      if (!id) throw new Error('id required')
+      const result = await window.shellApi.floorsRemove(id)
+      logCanvasEvent({ ts: Date.now(), kind: 'floor.remove', payload: { id } })
+      return result
+    }
+    case 'roles.list':
+      return roles
+    case 'role.assign': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t) throw new Error('tile not found')
+      assignRoleToTile(t, String(params.roleId ?? ''))
+      return { ok: true }
+    }
+    default:
+      throw new Error(`unknown method: ${method}`)
+  }
+}
+
+// Phase 3-20 hook: notify connected terminals when a note is edited
+function notifyNoteChanged(noteId: string, content: string): void {
+  // Find connections where `from` or `to` is the note id
+  for (const conn of connections) {
+    const otherId = conn.from === noteId ? conn.to : (conn.to === noteId ? conn.from : null)
+    if (!otherId) continue
+    const otherTile = tiles.find((t) => t.id === otherId)
+    if (!otherTile) continue
+    if (otherTile.type === 'terminal') {
+      // Deliver first line as a system comment; agents can poll or use CLI
+      const firstLine = content.split('\n')[0] ?? ''
+      const wv = webviews.get(otherTile.id)
+      if (wv) {
+        ;(wv.webview as any).send('cmux:write-to-pty', '')
+        // Actual agent-to-agent note sync is Phase 3-20 + /kanvas CLI
+        void firstLine
+      }
+    }
+  }
+}
+
+function startDrafting(fromId: string): void {
+  draftingConnection = { fromId }
+  const tile = tiles.find((t) => t.id === fromId)
+  if (tile) {
+    const c = getTileCenter(tile)
+    const s = screenFromCanvas(c.x, c.y)
+    draftingMouse = s
+  }
+  drawConnections()
+}
+function cancelDrafting(): void {
+  draftingConnection = null
+  draftingMouse = null
+  drawConnections()
+}
+function completeDraftingTo(toId: string): void {
+  if (!draftingConnection) return
+  if (draftingConnection.fromId === toId) { cancelDrafting(); return }
+  const conn: Connection = {
+    id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    from: draftingConnection.fromId,
+    to: toId,
+  }
+  connections.push(conn)
+  cancelDrafting()
+  logCanvasEvent({ ts: Date.now(), kind: 'connection.create', payload: { from: conn.from, to: conn.to } })
+  scheduleSave()
+}
+
+// ─── Viewport helpers ─────────────────────────────────────────────────
+
+function centerViewportOnTile(tile: Tile, animate = true): void {
+  const rect = panelViewer.getBoundingClientRect()
+  const targetPanX = rect.width / 2 - (tile.x + tile.width / 2) * zoom
+  const targetPanY = rect.height / 2 - (tile.y + tile.height / 2) * zoom
+  if (!animate) {
+    panX = targetPanX
+    panY = targetPanY
+    applyCanvasTransform()
+    drawGrid()
+    scheduleSave()
+    return
+  }
+  const startX = panX
+  const startY = panY
+  const duration = 280
+  const t0 = performance.now()
+  const step = (t: number) => {
+    const p = Math.min(1, (t - t0) / duration)
+    const ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2
+    panX = startX + (targetPanX - startX) * ease
+    panY = startY + (targetPanY - startY) * ease
+    applyCanvasTransform()
+    drawGrid()
+    if (p < 1) requestAnimationFrame(step)
+    else scheduleSave()
+  }
+  requestAnimationFrame(step)
 }
 
 // ─── Snap ────────────────────────────────────────────────────────────
@@ -446,7 +1260,7 @@ function createCanvasTile(
   y: number,
   extra?: { filePath?: string; folderPath?: string; url?: string; width?: number; height?: number }
 ): Tile {
-  const defaults = DEFAULT_SIZES[type]
+  const defaults = getDefaultSize(type)
   const tile: Tile = {
     id: generateTileId(),
     type,
@@ -463,6 +1277,7 @@ function createCanvasTile(
   tiles.push(tile)
   renderTileElement(tile)
   bringToFront(tile.id)
+  logCanvasEvent({ ts: Date.now(), kind: 'tile.create', tileId: tile.id, tileName: tileLabel(tile), payload: { type } })
 
   // If in fullscreen, make new tile fullscreen and show it
   if (isFullscreen) {
@@ -680,6 +1495,13 @@ function renderTileElement(tile: Tile): void {
   // Drag on titlebar
   setupTileDrag(titlebar, tile)
 
+  // Phase 1b-28/29: Right-click titlebar → context menu
+  titlebar.addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    openTileContextMenu(tile, e.clientX, e.clientY)
+  })
+
   // Click to focus
   container.addEventListener('mousedown', (e) => {
     if ((e.target as HTMLElement).closest('button')) return
@@ -727,6 +1549,7 @@ let noteCounter = 0
 const tileLabelMap = new Map<string, string>()
 
 function tileLabel(tile: Tile): string {
+  if (tile.customName) return tile.customName
   if (tileLabelMap.has(tile.id)) return tileLabelMap.get(tile.id)!
   let label: string
   switch (tile.type) {
@@ -742,20 +1565,146 @@ function tileLabel(tile: Tile): string {
   return label
 }
 
+// Phase 1b-28: Tile rename popover
+function openTileRenamePopover(tile: Tile, clientX: number, clientY: number): void {
+  const popover = document.getElementById('tile-rename-popover') as HTMLDivElement
+  const input = document.getElementById('tile-rename-input') as HTMLInputElement
+  popover.style.left = `${clientX}px`
+  popover.style.top = `${clientY}px`
+  input.value = tile.customName ?? tileLabel(tile)
+  popover.classList.add('open')
+  input.focus()
+  input.select()
+  const close = () => {
+    popover.classList.remove('open')
+    input.removeEventListener('keydown', onKey)
+    document.removeEventListener('mousedown', onOutside, true)
+  }
+  const save = () => {
+    const v = input.value.trim()
+    tile.customName = v || undefined
+    const el = tileElements.get(tile.id)
+    const tt = el?.querySelector('.tile-title-text')
+    if (tt) tt.textContent = tileLabel(tile)
+    scheduleSave()
+    close()
+  }
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Enter') { e.preventDefault(); save() }
+    else if (e.key === 'Escape') { e.preventDefault(); close() }
+  }
+  const onOutside = (e: MouseEvent) => {
+    if (!popover.contains(e.target as Node)) save()
+  }
+  input.addEventListener('keydown', onKey)
+  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 50)
+}
+
+// Phase 1b-29: Duplicate a tile
+function duplicateTile(tile: Tile): void {
+  const clone = createCanvasTile(tile.type, tile.x + 30, tile.y + 30, {
+    filePath: tile.filePath,
+    folderPath: tile.folderPath,
+    url: tile.url,
+    width: tile.width,
+    height: tile.height,
+  })
+  if (tile.customName) {
+    clone.customName = tile.customName + ' (copy)'
+    const el = tileElements.get(clone.id)
+    const tt = el?.querySelector('.tile-title-text')
+    if (tt) tt.textContent = tileLabel(clone)
+  }
+  scheduleSave()
+}
+
+// Phase 1b-28/29: Right-click context menu on tile titlebar
+function openTileContextMenu(tile: Tile, clientX: number, clientY: number): void {
+  const menu = document.getElementById('tile-ctx-menu') as HTMLDivElement
+  menu.innerHTML = ''
+  menu.style.left = `${clientX}px`
+  menu.style.top = `${clientY}px`
+  const mk = (label: string, action: () => void, opts?: { danger?: boolean }) => {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.textContent = label
+    if (opts?.danger) b.style.color = '#f87171'
+    b.addEventListener('click', (e) => {
+      e.stopPropagation()
+      action()
+      menu.classList.remove('open')
+    })
+    menu.appendChild(b)
+  }
+  const divider = () => {
+    const d = document.createElement('div')
+    d.className = 'divider'
+    menu.appendChild(d)
+  }
+  mk('Rename…', () => openTileRenamePopover(tile, clientX, clientY))
+  mk('Duplicate', () => duplicateTile(tile))
+  mk('Bring to Front', () => bringToFront(tile.id))
+  divider()
+  // Phase 3-18: start connection from this tile
+  mk('Start Connection (⌘L)', () => startDrafting(tile.id))
+  // Phase 3-16: send current selection / note content to connected tiles
+  if (connections.some((c) => c.from === tile.id || c.to === tile.id)) {
+    mk('Send to Connected…', () => sendToConnected(tile))
+  }
+  // Phase 3-17: role assignment submenu (flat for simplicity)
+  if (tile.type === 'terminal' && roles.length > 0) {
+    divider()
+    const currentRoleId = tile.roleId
+    for (const r of roles) {
+      const label = (r.id === currentRoleId ? '✓ ' : '   ') + `${r.icon} ${r.name}`
+      mk(label, () => assignRoleToTile(tile, r.id))
+    }
+    if (currentRoleId) {
+      mk('   Clear Role', () => assignRoleToTile(tile, undefined))
+    }
+  }
+  divider()
+  mk('Close', () => removeTile(tile.id), { danger: true })
+  menu.classList.add('open')
+  const onOutside = (e: MouseEvent) => {
+    if (!menu.contains(e.target as Node)) {
+      menu.classList.remove('open')
+      document.removeEventListener('mousedown', onOutside, true)
+    }
+  }
+  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 50)
+}
+
 // ─── Tile webview creation ───────────────────────────────────────────
 
 function createTileWebview(tile: Tile, container: HTMLDivElement): void {
   if (tile.type === 'note') {
+    // Phase 3-14: Sticky Note — textarea bound to tile.noteContent, persisted via canvas state
+    // If tile.filePath is set, load/save from disk; otherwise keep in canvas state
     const textarea = document.createElement('textarea')
     textarea.style.cssText = `
-      width: 100%; height: 100%; background: #1a1a1a; color: #e0e0e0;
+      width: 100%; height: 100%; background: var(--bg-panel); color: var(--text-primary);
       border: none; outline: none; resize: none; padding: 12px;
       font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px;
       line-height: 1.6;
     `
-    textarea.placeholder = 'Type your notes here...'
+    textarea.placeholder = '# Note\n\nType your notes here...'
     textarea.addEventListener('mousedown', (e) => e.stopPropagation())
     container.appendChild(textarea)
+
+    // Hydrate
+    textarea.value = tile.noteContent ?? ''
+
+    // Save on input (debounced)
+    let saveTimer: ReturnType<typeof setTimeout> | null = null
+    textarea.addEventListener('input', () => {
+      if (saveTimer) clearTimeout(saveTimer)
+      saveTimer = setTimeout(() => {
+        tile.noteContent = textarea.value
+        scheduleSave()
+        notifyNoteChanged(tile.id, textarea.value)
+      }, 300)
+    })
     return
   }
 
@@ -803,8 +1752,11 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
   if (!config) return
 
   src = config.src
-  if (tile.type === 'terminal' && tile.sessionId) {
-    src += `?sessionId=${encodeURIComponent(tile.sessionId)}`
+  if (tile.type === 'terminal') {
+    const params: string[] = []
+    if (tile.sessionId) params.push(`sessionId=${encodeURIComponent(tile.sessionId)}`)
+    if (tile.cwd) params.push(`cwd=${encodeURIComponent(tile.cwd)}`)
+    if (params.length) src += `?${params.join('&')}`
   }
   if ((tile.type === 'viewer' || tile.type === 'file') && tile.filePath) {
     src += `?file=${encodeURIComponent(tile.filePath)}`
@@ -826,6 +1778,26 @@ function createTileWebview(tile: Tile, container: HTMLDivElement): void {
     }
     if (event.channel === 'request-remove-tile') {
       removeTile(tile.id)
+    }
+    // Phase 1b-27: Terminal reports its cwd (OSC 7)
+    if (event.channel === 'terminal-cwd-update') {
+      const newCwd = event.args?.[0]
+      if (typeof newCwd === 'string' && newCwd) {
+        tile.cwd = newCwd
+        scheduleSave()
+      }
+    }
+    // Phase 4b-34/35: Terminal lifecycle events (OSC 133)
+    if (event.channel === 'terminal-event') {
+      const kind = event.args?.[0] as string
+      const payload = event.args?.[1]
+      logCanvasEvent({
+        ts: Date.now(),
+        kind: `terminal.${kind}`,
+        tileId: tile.id,
+        tileName: tileLabel(tile),
+        payload,
+      })
     }
   })
 }
@@ -870,6 +1842,14 @@ function setupTileDrag(titlebar: HTMLDivElement, tile: Tile): void {
   let tileStartY = 0
   let isDragging = false
 
+  // Phase 1-5: double-click titlebar to center viewport on this tile
+  titlebar.addEventListener('dblclick', (e) => {
+    if ((e.target as HTMLElement).closest('button')) return
+    e.preventDefault()
+    e.stopPropagation()
+    centerViewportOnTile(tile, true)
+  })
+
   titlebar.addEventListener('mousedown', (e) => {
     if ((e.target as HTMLElement).closest('button')) return
     if (e.button !== 0) return
@@ -895,6 +1875,7 @@ function setupTileDrag(titlebar: HTMLDivElement, tile: Tile): void {
         el.style.left = `${tile.x}px`
         el.style.top = `${tile.y}px`
       }
+      drawGrid()
     }
 
     const onUp = () => {
@@ -977,12 +1958,14 @@ function startResize(e: MouseEvent, tile: Tile, dir: ResizeDir): void {
 
     const el = tileElements.get(tile.id)
     if (el) applyTilePosition(el, tile)
+    drawGrid()
   }
 
   const onUp = () => {
     overlay.remove()
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
+    rememberTileSize(tile.type, tile.width, tile.height)
     scheduleSave()
   }
 
@@ -1096,6 +2079,109 @@ function setupCanvasInteractions(): void {
     const canvasX = (e.clientX - rect.left - panX) / zoom
     const canvasY = (e.clientY - rect.top - panY) / zoom
     createCanvasTile('terminal', snapToGrid(canvasX), snapToGrid(canvasY))
+  })
+
+  // Phase 1-6: Quick-create menu — click empty canvas to get instant [+ Terminal] [+ Note]
+  let quickMenuEl: HTMLDivElement | null = null
+  const closeQuickMenu = () => {
+    if (quickMenuEl) {
+      quickMenuEl.remove()
+      quickMenuEl = null
+    }
+  }
+  const showQuickCreateMenu = (clientX: number, clientY: number, canvasX: number, canvasY: number) => {
+    closeQuickMenu()
+    const menu = document.createElement('div')
+    menu.className = 'quick-create-menu'
+    menu.style.cssText = [
+      'position:fixed',
+      `left:${clientX + 4}px`,
+      `top:${clientY + 4}px`,
+      'background:rgba(30,30,30,0.95)',
+      'border:1px solid #555',
+      'border-radius:6px',
+      'padding:4px',
+      'display:flex',
+      'gap:4px',
+      'z-index:9999',
+      'box-shadow:0 4px 12px rgba(0,0,0,0.4)',
+      'font-size:12px',
+      'color:#e0e0e0',
+      "font-family:'SF Pro', sans-serif",
+    ].join(';')
+    const mkBtn = (label: string, onClick: () => void) => {
+      const b = document.createElement('button')
+      b.textContent = label
+      b.style.cssText = [
+        'background:transparent',
+        'border:none',
+        'color:inherit',
+        'padding:6px 10px',
+        'cursor:pointer',
+        'border-radius:4px',
+        'font-size:inherit',
+      ].join(';')
+      b.addEventListener('mouseenter', () => { b.style.background = '#3a3a3a' })
+      b.addEventListener('mouseleave', () => { b.style.background = 'transparent' })
+      b.addEventListener('click', (e) => {
+        e.stopPropagation()
+        onClick()
+        closeQuickMenu()
+      })
+      return b
+    }
+    menu.appendChild(mkBtn('+ Terminal', () => {
+      createCanvasTile('terminal', snapToGrid(canvasX), snapToGrid(canvasY))
+    }))
+    menu.appendChild(mkBtn('+ Note', () => {
+      createCanvasTile('note', snapToGrid(canvasX), snapToGrid(canvasY))
+    }))
+    menu.appendChild(mkBtn('✕', () => {}))
+    document.body.appendChild(menu)
+    quickMenuEl = menu
+    const timer = window.setTimeout(closeQuickMenu, 4000)
+    const dismiss = (ev: MouseEvent) => {
+      if (quickMenuEl && !quickMenuEl.contains(ev.target as Node)) {
+        closeQuickMenu()
+        window.clearTimeout(timer)
+        document.removeEventListener('mousedown', dismiss, true)
+      }
+    }
+    window.setTimeout(() => {
+      document.addEventListener('mousedown', dismiss, true)
+    }, 100)
+  }
+
+  // Track clicks on empty canvas — detect pure clicks (no drag) and show quick menu
+  let qmDownX = 0
+  let qmDownY = 0
+  let qmDownTime = 0
+  panelViewer.addEventListener('mousedown', (e) => {
+    qmDownX = e.clientX
+    qmDownY = e.clientY
+    qmDownTime = Date.now()
+  }, true)
+  panelViewer.addEventListener('mouseup', (e) => {
+    const target = e.target as HTMLElement
+    if (target.closest('.canvas-tile')) return
+    if (target.closest('.quick-create-menu')) return
+    if (target.closest('#new-tile-fab')) return
+    if (target.closest('#new-tile-menu')) return
+    if (target.closest('#tile-ctx-menu')) return
+    if (target.closest('#tile-rename-popover')) return
+    if (e.button !== 0) return
+    if (spaceHeld) return
+    if (draftingConnection) return
+    const dx = Math.abs(e.clientX - qmDownX)
+    const dy = Math.abs(e.clientY - qmDownY)
+    const dt = Date.now() - qmDownTime
+    // Pure click: minimal movement, short time
+    if (dx < 4 && dy < 4 && dt < 300) {
+      const rect = panelViewer.getBoundingClientRect()
+      const canvasX = (e.clientX - rect.left - panX) / zoom
+      const canvasY = (e.clientY - rect.top - panY) / zoom
+      showQuickCreateMenu(e.clientX, e.clientY, canvasX, canvasY)
+    }
   })
 
   // Drop files from navigator onto canvas → create file tiles
@@ -1225,6 +2311,30 @@ function handleShortcut(action: string): void {
     case 'toggle-settings':
       window.shellApi.openSettings()
       break
+    case 'toggle-theme': {
+      const cur = document.body.getAttribute('data-theme') ?? 'dark'
+      const next = cur === 'dark' ? 'light' : 'dark'
+      document.body.setAttribute('data-theme', next)
+      window.shellApi.setPref('theme', next)
+      break
+    }
+    case 'toggle-draw':
+      toggleDrawMode()
+      break
+    case 'toggle-right-panel': {
+      const rp = document.getElementById('panel-right')!
+      if (rp.classList.contains('open')) {
+        rp.classList.remove('open')
+        document.getElementById('right-toggle')?.classList.remove('active')
+      } else {
+        rp.classList.add('open')
+        document.getElementById('right-toggle')?.classList.add('active')
+      }
+      break
+    }
+    case 'start-connection':
+      if (focusedTileId) startDrafting(focusedTileId)
+      break
   }
 }
 
@@ -1319,7 +2429,11 @@ export function createTerminalTile(cwd?: string): void {
   const rect = panelViewer.getBoundingClientRect()
   const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES.terminal.w / 2
   const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES.terminal.h / 2
-  createCanvasTile('terminal', snapToGrid(cx), snapToGrid(cy))
+  const tile = createCanvasTile('terminal', snapToGrid(cx), snapToGrid(cy))
+  if (cwd) {
+    tile.cwd = cwd
+    scheduleSave()
+  }
 }
 
 // ─── cmux internal handlers ──────────────────────────────────────────

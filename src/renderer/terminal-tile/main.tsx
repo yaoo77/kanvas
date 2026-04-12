@@ -18,10 +18,16 @@ declare global {
       onPtyExit: (cb: (payload: { sessionId: string; exitCode: number }) => void) => void
       offPtyExit: (cb: (payload: { sessionId: string; exitCode: number }) => void) => void
       notifyPtySessionId: (id: string) => void
+      notifyTerminalCwd: (cwd: string) => void
+      notifyTerminalEvent: (kind: string, payload?: unknown) => void
       cmuxExec: (args: string[]) => Promise<{ ok: boolean; output?: string; error?: string }>
       onCmuxWrite: (cb: (text: string) => void) => void
       offCmuxWrite: (cb: (text: string) => void) => void
       getConfig: () => Promise<{ workspacePath?: string }>
+      openExternal: (url: string) => void
+      openPath: (path: string) => Promise<{ ok: boolean; error?: string }>
+      selectFile: (path: string) => void
+      saveClipboardImageToTemp: () => Promise<string | null>
     }
   }
 }
@@ -259,6 +265,7 @@ interface RegistryEntry {
   inputDisposable: { dispose: () => void }
   resizeDisposable: { dispose: () => void }
   titleDisposable: { dispose: () => void }
+  scrollDisposable: { dispose: () => void }
 }
 
 const sessionRegistry = new Map<string, RegistryEntry>()
@@ -271,6 +278,7 @@ function destroyRegistryEntry(termId: string) {
   entry.inputDisposable.dispose()
   entry.resizeDisposable.dispose()
   entry.titleDisposable.dispose()
+  entry.scrollDisposable.dispose()
   entry.resizeObserver.disconnect()
   window.api.ptyKill(entry.sessionId)
   entry.term.dispose()
@@ -383,10 +391,189 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
       term.open(xtermContainer)
       fitAddon.fit()
 
+      // Cmd+Click URL link provider
+      const urlRegex = /(https?:\/\/[^\s"'<>()\[\]{}`]+[^\s"'<>()\[\]{}`.,;:!?])/g
+      term.registerLinkProvider({
+        provideLinks(bufferLineNumber: number, callback: (links: unknown[] | undefined) => void) {
+          const buffer = term.buffer.active
+          const line = buffer.getLine(bufferLineNumber - 1)
+          if (!line) { callback(undefined); return }
+          const lineText = line.translateToString(true)
+          const links: unknown[] = []
+          for (const match of lineText.matchAll(urlRegex)) {
+            if (match.index === undefined) continue
+            const start = match.index
+            const end = start + match[0].length
+            links.push({
+              range: {
+                start: { x: start + 1, y: bufferLineNumber },
+                end: { x: end, y: bufferLineNumber },
+              },
+              text: match[0],
+              activate(event: MouseEvent, text: string) {
+                if (event.metaKey || event.ctrlKey) {
+                  window.api.openExternal(text)
+                }
+              },
+              hover() {
+                xtermContainer.style.cursor = 'pointer'
+              },
+              leave() {
+                xtermContainer.style.cursor = ''
+              },
+            })
+          }
+          callback(links.length ? links : undefined)
+        },
+      })
+
+      // Cmd+Click bare filename link provider
+      // Matches: src/foo.ts, ./bar.js, /abs/path, with optional :line:col
+      const fileRegex = /(?:^|[\s"'`(\[])((?:\.{0,2}\/|\/)?[\w.@+-]+(?:\/[\w.@+-]+)+(?::\d+(?::\d+)?)?)/g
+      term.registerLinkProvider({
+        provideLinks(bufferLineNumber: number, callback: (links: unknown[] | undefined) => void) {
+          const buffer = term.buffer.active
+          const line = buffer.getLine(bufferLineNumber - 1)
+          if (!line) { callback(undefined); return }
+          const lineText = line.translateToString(true)
+          const links: unknown[] = []
+          for (const match of lineText.matchAll(fileRegex)) {
+            if (match.index === undefined) continue
+            const rawPath = match[1]
+            if (!rawPath) continue
+            // Skip if caught by URL regex
+            if (/^https?:\/\//i.test(rawPath)) continue
+            // Require at least one / to avoid matching every word
+            if (!rawPath.includes('/')) continue
+            const offset = match[0].length - rawPath.length
+            const start = match.index + offset
+            const end = start + rawPath.length
+            links.push({
+              range: {
+                start: { x: start + 1, y: bufferLineNumber },
+                end: { x: end, y: bufferLineNumber },
+              },
+              text: rawPath,
+              activate(event: MouseEvent, text: string) {
+                if (!(event.metaKey || event.ctrlKey)) return
+                // Strip :line:col suffix
+                const clean = text.replace(/:\d+(?::\d+)?$/, '')
+                // Resolve against cwd or workspace
+                let resolved = clean
+                if (!clean.startsWith('/')) {
+                  const base = cwd || ''
+                  if (base) {
+                    resolved = base.replace(/\/$/, '') + '/' + clean.replace(/^\.\//, '')
+                  }
+                }
+                window.api.selectFile(resolved)
+              },
+              hover() {
+                xtermContainer.style.cursor = 'pointer'
+              },
+              leave() {
+                xtermContainer.style.cursor = ''
+              },
+            })
+          }
+          callback(links.length ? links : undefined)
+        },
+      })
+
+      // Phase 1-3: Auto-scroll lock — jump-to-bottom button
+      xtermContainer.style.position = 'relative'
+      const jumpBtn = document.createElement('button')
+      jumpBtn.textContent = '↓ Jump to bottom'
+      jumpBtn.style.cssText = [
+        'position:absolute',
+        'right:12px',
+        'bottom:12px',
+        'padding:4px 10px',
+        'font-size:11px',
+        'font-family:inherit',
+        'background:rgba(60,60,60,0.85)',
+        'color:#e0e0e0',
+        'border:1px solid #555',
+        'border-radius:4px',
+        'cursor:pointer',
+        'display:none',
+        'z-index:10',
+      ].join(';')
+      jumpBtn.onclick = (e) => {
+        e.stopPropagation()
+        term.scrollToBottom()
+      }
+      xtermContainer.appendChild(jumpBtn)
+      const scrollDisposable = term.onScroll(() => {
+        const viewportY = term.buffer.active.viewportY
+        const baseY = term.buffer.active.baseY
+        jumpBtn.style.display = viewportY < baseY - 1 ? 'block' : 'none'
+      })
+
+      // Phase 1-4: Smart Copy (Cmd+Shift+C) — trim trailing whitespace per line
+      // Phase 1-7: Cmd+V with clipboard image → save temp file and paste path to pty
+      term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+        if (e.type !== 'keydown') return true
+        if (e.metaKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+          const sel = term.getSelection()
+          if (sel) {
+            const cleaned = sel
+              .split('\n')
+              .map((l) => l.replace(/[ \t]+$/, ''))
+              .join('\n')
+              .replace(/\n{3,}/g, '\n\n')
+            navigator.clipboard.writeText(cleaned)
+          }
+          e.preventDefault()
+          return false
+        }
+        if (e.metaKey && !e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+          // Try to paste clipboard image as temp-file path
+          window.api.saveClipboardImageToTemp().then((tmpPath) => {
+            const sid = sessionRegistry.get(termId)?.sessionId
+            if (!sid) return
+            if (tmpPath) {
+              // Claude Code accepts bare file paths; Codex expects @ prefix — use bare, user can adjust
+              window.api.ptyWrite(sid, tmpPath.includes(' ') ? `'${tmpPath}' ` : `${tmpPath} `)
+            } else {
+              // No image in clipboard: fall back to text paste
+              navigator.clipboard.readText().then((text) => {
+                if (text) window.api.ptyWrite(sid, text)
+              })
+            }
+          })
+          e.preventDefault()
+          return false
+        }
+        return true
+      })
+
       // Connect data listener
       let gotFirstPrompt = false
       const onData = (payload: { sessionId: string; data: string }) => {
         if (payload.sessionId === id) {
+          // Phase 1b-27: OSC 7 cwd detection — ESC ] 7 ; file://host/path BEL
+          const osc7Match = payload.data.match(/\x1b\]7;file:\/\/[^/]*(\/[^\x07\x1b]*?)(?:\x07|\x1b\\)/)
+          if (osc7Match) {
+            try {
+              const decoded = decodeURIComponent(osc7Match[1])
+              window.api.notifyTerminalCwd(decoded)
+            } catch {}
+          }
+          // Phase 4b-35: OSC 133 prompt markers (A/B/C/D)
+          const osc133 = payload.data.match(/\x1b\]133;([ABCD])(?:;(\d+))?(?:\x07|\x1b\\)/g)
+          if (osc133) {
+            for (const seq of osc133) {
+              const m = seq.match(/133;([ABCD])(?:;(\d+))?/)
+              if (!m) continue
+              const kind = m[1]
+              const code = m[2]
+              if (kind === 'A') window.api.notifyTerminalEvent('prompt-start')
+              else if (kind === 'B') window.api.notifyTerminalEvent('prompt-end')
+              else if (kind === 'C') window.api.notifyTerminalEvent('command-start')
+              else if (kind === 'D') window.api.notifyTerminalEvent('command-end', code ? parseInt(code, 10) : 0)
+            }
+          }
           const urlMatch = payload.data.match(/kanvas-open:(https?:\/\/[^\x07\x1b]+)/)
           if (urlMatch) {
             window.api.cmuxExec(['new-pane', '--type', 'browser', '--url', urlMatch[1].trim()])
@@ -444,6 +631,7 @@ function TerminalSession({ termId, visible, focused, cwd, onSessionReady, onStat
         inputDisposable,
         resizeDisposable,
         titleDisposable,
+        scrollDisposable,
       })
     })
 

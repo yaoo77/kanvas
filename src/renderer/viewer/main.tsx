@@ -385,6 +385,7 @@ function PdfPreview({ filePath }: { filePath: string }) {
       <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'auto', padding: 16 }}>
         <iframe
           src={pdfSrc}
+          sandbox="allow-same-origin"
           style={{
             width: `${zoom * 100}%`,
             height: `${zoom * 100}%`,
