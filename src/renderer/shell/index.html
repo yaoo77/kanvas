@@ -384,6 +384,100 @@
     .note-preview a { color: var(--accent); text-decoration: underline; }
     .note-preview strong { font-weight: 600; }
     .note-preview p { margin: 0.3em 0; }
+
+    /* Kanban: Task status styles */
+    .canvas-tile.task-backlog { border-color: #555; }
+    .canvas-tile.task-in_progress {
+      border-color: #4a9eff;
+      box-shadow: 0 0 0 1px #4a9eff, 0 0 20px rgba(74,158,255,0.15), 0 8px 24px rgba(0,0,0,0.35);
+      animation: task-pulse 2.5s ease-in-out infinite;
+    }
+    .canvas-tile.task-review {
+      border-color: #f5a623;
+      box-shadow: 0 0 0 1px #f5a623, 0 0 12px rgba(245,166,35,0.12), 0 8px 24px rgba(0,0,0,0.35);
+    }
+    .canvas-tile.task-done {
+      border-color: #27ae60;
+      box-shadow: 0 0 0 1px #27ae60, 0 8px 24px rgba(0,0,0,0.35);
+    }
+    @keyframes task-pulse {
+      0%, 100% { box-shadow: 0 0 0 1px #4a9eff, 0 0 20px rgba(74,158,255,0.15), 0 8px 24px rgba(0,0,0,0.35); }
+      50% { box-shadow: 0 0 0 2px #4a9eff, 0 0 30px rgba(74,158,255,0.25), 0 8px 24px rgba(0,0,0,0.35); }
+    }
+    .task-status-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10px; font-weight: 600; padding: 1px 6px;
+      border-radius: 3px; margin-right: 4px; text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .task-status-badge.backlog { background: rgba(85,85,85,0.3); color: #999; }
+    .task-status-badge.in_progress { background: rgba(74,158,255,0.15); color: #6cb4ff; }
+    .task-status-badge.review { background: rgba(245,166,35,0.15); color: #f5a623; }
+    .task-status-badge.done { background: rgba(39,174,96,0.15); color: #27ae60; }
+    .task-status-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+    }
+    .task-status-dot.backlog { background: #666; }
+    .task-status-dot.in_progress { background: #4a9eff; animation: dot-blink 1.5s ease-in-out infinite; }
+    .task-status-dot.review { background: #f5a623; }
+    .task-status-dot.done { background: #27ae60; }
+    @keyframes dot-blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .task-prompt-preview {
+      font-size: 11px; color: var(--text-muted); padding: 4px 8px;
+      border-top: 1px solid var(--border); overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0;
+      max-height: 28px;
+    }
+
+    /* Task prompt input modal */
+    #task-prompt-modal {
+      position: fixed; z-index: 10000; inset: 0;
+      display: none; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.5); backdrop-filter: blur(4px);
+    }
+    #task-prompt-modal.open { display: flex; }
+    #task-prompt-modal .modal-content {
+      background: var(--bg-surface); border: 1px solid var(--border-strong);
+      border-radius: 10px; padding: 20px; width: 480px; max-width: 90vw;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+    }
+    #task-prompt-modal h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary); }
+    #task-prompt-modal textarea {
+      width: 100%; height: 120px; background: var(--bg-base); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text-primary); padding: 10px; font-size: 13px;
+      font-family: inherit; resize: vertical; outline: none;
+    }
+    #task-prompt-modal textarea:focus { border-color: var(--accent); }
+    #task-prompt-modal .modal-actions {
+      display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;
+    }
+    #task-prompt-modal .modal-actions button {
+      padding: 6px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; border: none;
+    }
+    #task-prompt-modal .btn-cancel { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border); }
+    #task-prompt-modal .btn-cancel:hover { background: var(--bg-hover); }
+    #task-prompt-modal .btn-primary { background: var(--accent); color: #fff; }
+    #task-prompt-modal .btn-primary:hover { opacity: 0.9; }
+
+    /* Agent output line (bottom of task tiles) */
+    .task-output-line {
+      font-size: 10px; color: var(--text-dim); padding: 3px 8px;
+      border-top: 1px solid var(--border); overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      max-height: 22px; background: rgba(0,0,0,0.2);
+    }
+    .task-in_progress .task-output-line { color: #6cb4ff; }
+    .task-review .task-output-line { color: #f5a623; }
+    .task-done .task-output-line { color: #27ae60; }
+
+    /* Connection lines: status-colored */
+    #conn-layer .conn-line.conn-done { stroke: rgba(39,174,96,0.6); }
+    #conn-layer .conn-line.conn-active { stroke: rgba(74,158,255,0.8); stroke-width: 3; }
+    #conn-layer .conn-line.conn-blocked { stroke: rgba(100,100,100,0.4); stroke-dasharray: 8 4; }
   </style>
 </head>
 <body>
@@ -438,6 +532,10 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
           <span class="tb-tooltip">Draw</span>
         </button>
+        <button type="button" data-action="new-task" title="New Task" style="color:#4a9eff;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
+          <span class="tb-tooltip">New Task</span>
+        </button>
       </div>
       <div id="zoom-controls">
         <button id="zoom-out" title="Zoom Out">−</button>
@@ -458,6 +556,17 @@
   <div id="settings-overlay">
     <div id="settings-backdrop"></div>
     <div id="settings-modal"></div>
+  </div>
+
+  <div id="task-prompt-modal">
+    <div class="modal-content">
+      <h3 id="task-prompt-title">Task Prompt</h3>
+      <textarea id="task-prompt-input" placeholder="Describe what this agent should do..."></textarea>
+      <div class="modal-actions">
+        <button type="button" class="btn-cancel" id="task-prompt-cancel">Cancel</button>
+        <button type="button" class="btn-primary" id="task-prompt-ok">Create Task</button>
+      </div>
+    </div>
   </div>
 
   <div id="loading-overlay">

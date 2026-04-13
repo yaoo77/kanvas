@@ -171,4 +171,30 @@ contextBridge.exposeInMainWorld('shellApi', {
 
   noteReadFile: (filePath: string) => ipcRenderer.invoke('note:read-file', filePath),
   noteWriteFile: (filePath: string, content: string) => ipcRenderer.invoke('note:write-file', { filePath, content }),
+
+  // Kanban: task worktree + agent management
+  taskWorktreeCreate: (opts: { sourceDir: string; taskId: string; taskName: string }) =>
+    ipcRenderer.invoke('task:worktree-create', opts),
+  taskWorktreeRemove: (opts: { sourceDir: string; worktreeDir: string }) =>
+    ipcRenderer.invoke('task:worktree-remove', opts),
+  taskWorktreeDiff: (opts: { worktreeDir: string }) =>
+    ipcRenderer.invoke('task:worktree-diff', opts),
+  taskWorktreeCommit: (opts: { worktreeDir: string; message: string }) =>
+    ipcRenderer.invoke('task:worktree-commit', opts),
+  taskWorktreeMerge: (opts: { sourceDir: string; branch: string }) =>
+    ipcRenderer.invoke('task:worktree-merge', opts),
+  taskSpawnAgent: (opts: { worktreeDir: string; prompt: string; taskId: string }) =>
+    ipcRenderer.invoke('task:spawn-agent', opts),
+  taskKillAgent: (taskId: string) =>
+    ipcRenderer.invoke('task:kill-agent', taskId),
+  onTaskAgentExit: (cb: (taskId: string, exitCode: number) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, taskId: string, code: number) => cb(taskId, code)
+    ipcRenderer.on('task:agent-exit', handler)
+    return () => ipcRenderer.removeListener('task:agent-exit', handler)
+  },
+  onTaskAgentOutput: (cb: (taskId: string, output: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, taskId: string, output: string) => cb(taskId, output)
+    ipcRenderer.on('task:agent-output', handler)
+    return () => ipcRenderer.removeListener('task:agent-output', handler)
+  },
 })

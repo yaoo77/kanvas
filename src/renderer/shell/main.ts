@@ -58,6 +58,22 @@ declare global {
       onTilesCloseAll: (cb: () => void) => () => void
       noteReadFile: (filePath: string) => Promise<string>
       noteWriteFile: (filePath: string, content: string) => Promise<void>
+      // Kanban: task worktree + agent
+      taskWorktreeCreate: (opts: { sourceDir: string; taskId: string; taskName: string }) =>
+        Promise<{ ok: boolean; worktreeDir?: string; branch?: string; error?: string }>
+      taskWorktreeRemove: (opts: { sourceDir: string; worktreeDir: string }) =>
+        Promise<{ ok: boolean; error?: string }>
+      taskWorktreeDiff: (opts: { worktreeDir: string }) =>
+        Promise<{ ok: boolean; summary?: string; diff?: string; error?: string }>
+      taskWorktreeCommit: (opts: { worktreeDir: string; message: string }) =>
+        Promise<{ ok: boolean; error?: string }>
+      taskWorktreeMerge: (opts: { sourceDir: string; branch: string }) =>
+        Promise<{ ok: boolean; error?: string }>
+      taskSpawnAgent: (opts: { worktreeDir: string; prompt: string; taskId: string }) =>
+        Promise<{ ok: boolean; pid?: number; error?: string }>
+      taskKillAgent: (taskId: string) => Promise<{ ok: boolean; error?: string }>
+      onTaskAgentExit: (cb: (taskId: string, exitCode: number) => void) => () => void
+      onTaskAgentOutput: (cb: (taskId: string, output: string) => void) => () => void
     }
   }
 }
@@ -65,6 +81,8 @@ declare global {
 interface ViewConfig {
   [key: string]: { src: string; preload: string }
 }
+
+type TaskStatus = 'backlog' | 'in_progress' | 'review' | 'done'
 
 interface Tile {
   id: string
@@ -83,6 +101,11 @@ interface Tile {
   roleId?: string           // Phase 3-17: assigned agent role
   noteContent?: string      // Phase 3-14: sticky note markdown body
   noteFilePath?: string     // Phase 6: path to .md file on disk
+  // Kanban: task management fields
+  taskStatus?: TaskStatus
+  taskPrompt?: string
+  worktreePath?: string
+  worktreeBranch?: string
 }
 
 interface CanvasState {
@@ -596,6 +619,17 @@ async function init(): Promise<void> {
           return
         }
 
+        // Handle new task
+        if (action === 'new-task') {
+          const rect = panelViewer.getBoundingClientRect()
+          const size = DEFAULT_SIZES.terminal
+          const cx = (-panX + rect.width / 2) / zoom - size.w / 2
+          const cy = (-panY + rect.height / 2) / zoom - size.h / 2
+          const tile = createCanvasTile('terminal', snapToGrid(cx), snapToGrid(cy))
+          openTaskPromptModal(tile)
+          return
+        }
+
         // Handle file open
         if (action === 'open-file') {
           const filesTab = document.querySelector('#nav-tabs button') as HTMLButtonElement | null
@@ -642,6 +676,9 @@ async function init(): Promise<void> {
   updateZoomIndicator()
   setupMinimap()
   renderMinimap()
+
+  // Kanban: listen for agent events
+  setupTaskAgentListeners()
 }
 
 // ─── Canvas state persistence ────────────────────────────────────────
@@ -1074,6 +1111,16 @@ function drawConnections(): void {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
     path.setAttribute('d', `M ${a.x} ${a.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${b.x} ${b.y}`)
     path.classList.add('conn-line')
+    // Kanban: color connection lines by task status
+    if (from.taskStatus || to.taskStatus) {
+      if (from.taskStatus === 'done' && to.taskStatus === 'done') {
+        path.classList.add('conn-done')
+      } else if (to.taskStatus === 'in_progress') {
+        path.classList.add('conn-active')
+      } else if (to.taskStatus === 'backlog' && from.taskStatus !== 'done') {
+        path.classList.add('conn-blocked')
+      }
+    }
     path.setAttribute('data-conn-id', conn.id)
     path.addEventListener('click', (e) => {
       e.stopPropagation()
@@ -1448,6 +1495,75 @@ async function handleCliMethod(method: string, params: Record<string, unknown>):
       const result = await window.shellApi.floorsRemove(id)
       logCanvasEvent({ ts: Date.now(), kind: 'floor.remove', payload: { id } })
       return result
+    }
+    // Kanban: task management via CLI
+    case 'task.list':
+      return tiles
+        .filter((t) => t.taskStatus)
+        .map((t) => ({
+          id: t.id, name: tileLabel(t), type: t.type,
+          taskStatus: t.taskStatus, taskPrompt: t.taskPrompt,
+          worktreeBranch: t.worktreeBranch,
+        }))
+    case 'task.create': {
+      const type = (params.type as Tile['type']) ?? 'terminal'
+      const prompt = String(params.prompt ?? '')
+      if (!prompt) throw new Error('prompt required')
+      const rect = panelViewer.getBoundingClientRect()
+      const cx = (-panX + rect.width / 2) / zoom - DEFAULT_SIZES[type].w / 2
+      const cy = (-panY + rect.height / 2) / zoom - DEFAULT_SIZES[type].h / 2
+      const t = createCanvasTile(type, snapToGrid(cx), snapToGrid(cy))
+      t.taskPrompt = prompt
+      t.taskStatus = 'backlog'
+      if (typeof params.name === 'string') t.customName = params.name
+      updateTileTaskVisual(t)
+      scheduleSave()
+      return { id: t.id, name: tileLabel(t), taskStatus: t.taskStatus }
+    }
+    case 'task.status': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t) throw new Error('tile not found')
+      if (params.status) {
+        const s = String(params.status) as TaskStatus
+        if (!['backlog', 'in_progress', 'review', 'done'].includes(s)) {
+          throw new Error('invalid status: ' + s)
+        }
+        setTaskStatus(t, s)
+      }
+      return { id: t.id, taskStatus: t.taskStatus, taskPrompt: t.taskPrompt }
+    }
+    case 'task.start': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t) throw new Error('tile not found')
+      if (!t.taskStatus) throw new Error('tile is not a task')
+      setTaskStatus(t, 'in_progress')
+      return { id: t.id, taskStatus: t.taskStatus }
+    }
+    case 'task.done': {
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t) throw new Error('tile not found')
+      setTaskStatus(t, 'done')
+      return { id: t.id, taskStatus: t.taskStatus }
+    }
+    case 'task.deps': {
+      // Get upstream and downstream dependencies for a task
+      const t = tiles.find((x) => x.id === params.id)
+      if (!t) throw new Error('tile not found')
+      const upstream = connections
+        .filter((c) => c.to === t.id)
+        .map((c) => {
+          const src = tiles.find((x) => x.id === c.from)
+          return src ? { id: src.id, name: tileLabel(src), taskStatus: src.taskStatus } : null
+        })
+        .filter(Boolean)
+      const downstream = connections
+        .filter((c) => c.from === t.id)
+        .map((c) => {
+          const dst = tiles.find((x) => x.id === c.to)
+          return dst ? { id: dst.id, name: tileLabel(dst), taskStatus: dst.taskStatus } : null
+        })
+        .filter(Boolean)
+      return { id: t.id, upstream, downstream }
     }
     case 'roles.list':
       return roles
@@ -1931,6 +2047,11 @@ function renderTileElement(tile: Tile): void {
   tileLayer.appendChild(container)
   tileElements.set(tile.id, container)
 
+  // Kanban: apply task visual if tile has task status
+  if (tile.taskStatus) {
+    updateTileTaskVisual(tile)
+  }
+
   // Create webview inside content area
   createTileWebview(tile, content)
 }
@@ -2030,6 +2151,258 @@ function duplicateTile(tile: Tile): void {
   scheduleSave()
 }
 
+// ─── Kanban: Task management ─────────────────────────────────────────
+
+const TASK_STATUS_COLORS: Record<TaskStatus, string> = {
+  backlog: '#666',
+  in_progress: '#4a9eff',
+  review: '#f5a623',
+  done: '#27ae60',
+}
+
+const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
+  backlog: 'BACKLOG',
+  in_progress: 'RUNNING',
+  review: 'REVIEW',
+  done: 'DONE',
+}
+
+function updateTileTaskVisual(tile: Tile): void {
+  const el = tileElements.get(tile.id)
+  if (!el) return
+
+  // Remove all task-* classes
+  el.classList.remove('task-backlog', 'task-in_progress', 'task-review', 'task-done')
+
+  // Remove existing badge and prompt preview
+  el.querySelector('.task-status-badge')?.remove()
+  el.querySelector('.task-prompt-preview')?.remove()
+
+  if (!tile.taskStatus) return
+
+  // Add status class
+  el.classList.add(`task-${tile.taskStatus}`)
+
+  // Add status badge to titlebar (before title text)
+  const titlebar = el.querySelector('.tile-titlebar') as HTMLDivElement
+  const titleText = titlebar?.querySelector('.tile-title-text')
+  if (titlebar && titleText) {
+    const badge = document.createElement('span')
+    badge.className = `task-status-badge ${tile.taskStatus}`
+    const dot = document.createElement('span')
+    dot.className = `task-status-dot ${tile.taskStatus}`
+    badge.appendChild(dot)
+    const label = document.createElement('span')
+    label.textContent = TASK_STATUS_LABELS[tile.taskStatus]
+    badge.appendChild(label)
+    titlebar.insertBefore(badge, titleText)
+  }
+
+  // Add prompt preview at bottom of tile
+  if (tile.taskPrompt) {
+    const preview = document.createElement('div')
+    preview.className = 'task-prompt-preview'
+    preview.textContent = tile.taskPrompt
+    preview.title = tile.taskPrompt
+    el.appendChild(preview)
+  }
+
+  // Update connection line styles
+  drawConnections()
+}
+
+async function setTaskStatus(tile: Tile, status: TaskStatus): Promise<void> {
+  const prev = tile.taskStatus
+  tile.taskStatus = status
+  updateTileTaskVisual(tile)
+  logCanvasEvent({
+    ts: Date.now(), kind: 'task.status',
+    tileId: tile.id, tileName: tileLabel(tile),
+    payload: { from: prev, to: status },
+  })
+  scheduleSave()
+
+  // Phase 2: Lifecycle automation
+  if (status === 'in_progress' && prev === 'backlog') {
+    await startTaskExecution(tile)
+  }
+  if (status === 'done' && prev === 'in_progress') {
+    // Kill agent if still running
+    await window.shellApi.taskKillAgent(tile.id).catch(() => {})
+  }
+
+  // Auto-progression: when done, check downstream dependencies
+  if (status === 'done') {
+    checkAutoProgression(tile)
+  }
+}
+
+// ─── Phase 2: Task execution ─────────────────────────────────────────
+
+const taskOutputLines = new Map<string, string>()  // last output per task
+
+async function startTaskExecution(tile: Tile): Promise<void> {
+  if (!tile.taskPrompt) return
+
+  const sourceDir = await window.shellApi.getWorkspacePath()
+  if (!sourceDir) {
+    logCanvasEvent({ ts: Date.now(), kind: 'task.error', tileId: tile.id, payload: { error: 'no workspace' } })
+    return
+  }
+
+  // Create git worktree
+  const taskName = tile.customName || tile.taskPrompt.slice(0, 30)
+  const result = await window.shellApi.taskWorktreeCreate({
+    sourceDir, taskId: tile.id, taskName,
+  })
+
+  if (!result.ok) {
+    logCanvasEvent({ ts: Date.now(), kind: 'task.error', tileId: tile.id, payload: { error: result.error } })
+    // Still allow running without worktree (use workspace directly)
+    const agentResult = await window.shellApi.taskSpawnAgent({
+      worktreeDir: sourceDir,
+      prompt: tile.taskPrompt,
+      taskId: tile.id,
+    })
+    if (agentResult.ok) {
+      updateTaskOutputDisplay(tile.id, 'Agent started (no worktree)')
+    }
+    return
+  }
+
+  tile.worktreePath = result.worktreeDir
+  tile.worktreeBranch = result.branch
+  scheduleSave()
+
+  // Spawn Claude Code agent in worktree
+  const agentResult = await window.shellApi.taskSpawnAgent({
+    worktreeDir: result.worktreeDir!,
+    prompt: tile.taskPrompt,
+    taskId: tile.id,
+  })
+
+  if (agentResult.ok) {
+    updateTaskOutputDisplay(tile.id, `Agent started (pid: ${agentResult.pid})`)
+    logCanvasEvent({
+      ts: Date.now(), kind: 'task.agent_started',
+      tileId: tile.id, tileName: tileLabel(tile),
+      payload: { pid: agentResult.pid, branch: result.branch },
+    })
+  }
+}
+
+function updateTaskOutputDisplay(tileId: string, output: string): void {
+  taskOutputLines.set(tileId, output)
+  const el = tileElements.get(tileId)
+  if (!el) return
+  let outputEl = el.querySelector('.task-output-line') as HTMLDivElement | null
+  if (!outputEl) {
+    outputEl = document.createElement('div')
+    outputEl.className = 'task-output-line'
+    el.appendChild(outputEl)
+  }
+  outputEl.textContent = output
+}
+
+function setupTaskAgentListeners(): void {
+  // Agent exit → move to review
+  window.shellApi.onTaskAgentExit((taskId, exitCode) => {
+    const tile = tiles.find((t) => t.id === taskId)
+    if (!tile) return
+    logCanvasEvent({
+      ts: Date.now(), kind: 'task.agent_exit',
+      tileId: tile.id, tileName: tileLabel(tile),
+      payload: { exitCode },
+    })
+    if (tile.taskStatus === 'in_progress') {
+      tile.taskStatus = 'review'
+      updateTileTaskVisual(tile)
+      updateTaskOutputDisplay(tile.id, exitCode === 0 ? 'Completed — ready for review' : `Exited with code ${exitCode}`)
+      scheduleSave()
+    }
+  })
+
+  // Agent output → update display
+  window.shellApi.onTaskAgentOutput((taskId, output) => {
+    updateTaskOutputDisplay(taskId, output)
+  })
+}
+
+function checkAutoProgression(completedTile: Tile): void {
+  // Find all downstream tiles (connections where completedTile is the source)
+  const downstream = connections
+    .filter((c) => c.from === completedTile.id)
+    .map((c) => tiles.find((t) => t.id === c.to))
+    .filter((t): t is Tile => !!t && t.taskStatus === 'backlog')
+
+  for (const target of downstream) {
+    // Check if ALL upstream dependencies of this target are done
+    const upstreamIds = connections
+      .filter((c) => c.to === target.id)
+      .map((c) => c.from)
+    const allDone = upstreamIds.every((id) => {
+      const upstream = tiles.find((t) => t.id === id)
+      return upstream?.taskStatus === 'done'
+    })
+    if (allDone) {
+      setTaskStatus(target, 'in_progress')
+      logCanvasEvent({
+        ts: Date.now(), kind: 'task.auto_start',
+        tileId: target.id, tileName: tileLabel(target),
+        payload: { trigger: completedTile.id },
+      })
+    }
+  }
+}
+
+let taskPromptResolve: ((value: { prompt: string } | null) => void) | null = null
+
+function openTaskPromptModal(tile: Tile): void {
+  const modal = document.getElementById('task-prompt-modal')!
+  const input = document.getElementById('task-prompt-input') as HTMLTextAreaElement
+  const title = document.getElementById('task-prompt-title') as HTMLHeadingElement
+  const okBtn = document.getElementById('task-prompt-ok') as HTMLButtonElement
+
+  title.textContent = tile.taskStatus ? 'Edit Task Prompt' : 'Create Task'
+  okBtn.textContent = tile.taskStatus ? 'Update' : 'Create Task'
+  input.value = tile.taskPrompt ?? ''
+  modal.classList.add('open')
+  input.focus()
+
+  const cleanup = () => {
+    modal.classList.remove('open')
+    taskPromptResolve = null
+  }
+
+  document.getElementById('task-prompt-cancel')!.onclick = () => cleanup()
+  document.getElementById('task-prompt-ok')!.onclick = () => {
+    const prompt = input.value.trim()
+    if (!prompt) { input.focus(); return }
+    tile.taskPrompt = prompt
+    if (!tile.taskStatus) {
+      tile.taskStatus = 'backlog'
+    }
+    updateTileTaskVisual(tile)
+    logCanvasEvent({
+      ts: Date.now(), kind: 'task.create',
+      tileId: tile.id, tileName: tileLabel(tile),
+      payload: { prompt: prompt.slice(0, 100) },
+    })
+    scheduleSave()
+    cleanup()
+  }
+
+  // Close on Escape
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') { cleanup(); document.removeEventListener('keydown', onKey) }
+    if (e.key === 'Enter' && e.metaKey) {
+      document.getElementById('task-prompt-ok')!.click()
+      document.removeEventListener('keydown', onKey)
+    }
+  }
+  document.addEventListener('keydown', onKey)
+}
+
 // Phase 1b-28/29: Right-click context menu on tile titlebar
 function openTileContextMenu(tile: Tile, clientX: number, clientY: number): void {
   const menu = document.getElementById('tile-ctx-menu') as HTMLDivElement
@@ -2062,6 +2435,91 @@ function openTileContextMenu(tile: Tile, clientX: number, clientY: number): void
   // Phase 3-16: send current selection / note content to connected tiles
   if (connections.some((c) => c.from === tile.id || c.to === tile.id)) {
     mk('Send to Connected…', () => sendToConnected(tile))
+  }
+  // Kanban: Task management
+  divider()
+  if (!tile.taskStatus) {
+    mk('Make Task…', () => openTaskPromptModal(tile))
+  } else {
+    const statusLabels: Record<TaskStatus, string> = {
+      backlog: 'Backlog', in_progress: 'In Progress', review: 'Review', done: 'Done'
+    }
+    mk(`Status: ${statusLabels[tile.taskStatus]}`, () => {})
+    const transitions: Record<TaskStatus, TaskStatus[]> = {
+      backlog: ['in_progress'],
+      in_progress: ['review', 'done'],
+      review: ['in_progress', 'done'],
+      done: ['backlog'],
+    }
+    for (const next of transitions[tile.taskStatus]) {
+      mk(`  → ${statusLabels[next]}`, () => setTaskStatus(tile, next))
+    }
+    // Phase 5: Review actions
+    if (tile.taskStatus === 'review' && tile.worktreePath) {
+      divider()
+      mk('View Diff…', async () => {
+        const result = await window.shellApi.taskWorktreeDiff({ worktreeDir: tile.worktreePath! })
+        if (result.ok) {
+          // Create a note tile with the diff summary
+          const rect = panelViewer.getBoundingClientRect()
+          const cx = tile.x + tile.width + 20
+          const cy = tile.y
+          const diffTile = createCanvasTile('note', snapToGrid(cx), snapToGrid(cy), { width: 500, height: 400 })
+          diffTile.noteContent = `# Diff: ${tileLabel(tile)}\n\n\`\`\`\n${result.summary}\n\`\`\``
+          diffTile.customName = `Diff: ${tileLabel(tile)}`
+          const el = tileElements.get(diffTile.id)
+          const ta = el?.querySelector('textarea') as HTMLTextAreaElement | null
+          if (ta) ta.value = diffTile.noteContent
+          writeNoteToDisk(diffTile)
+          scheduleSave()
+        }
+      })
+      mk('Commit…', async () => {
+        const msg = prompt('Commit message:', `task(${tileLabel(tile)}): completed`)
+        if (!msg) return
+        const result = await window.shellApi.taskWorktreeCommit({ worktreeDir: tile.worktreePath!, message: msg })
+        if (result.ok) {
+          updateTaskOutputDisplay(tile.id, 'Committed successfully')
+        }
+      })
+      mk('Merge to Main', async () => {
+        if (!tile.worktreeBranch) return
+        const sourceDir = await window.shellApi.getWorkspacePath()
+        if (!sourceDir) return
+        // Commit first
+        await window.shellApi.taskWorktreeCommit({
+          worktreeDir: tile.worktreePath!,
+          message: `task(${tileLabel(tile)}): completed`,
+        })
+        // Merge
+        const result = await window.shellApi.taskWorktreeMerge({ sourceDir, branch: tile.worktreeBranch })
+        if (result.ok) {
+          setTaskStatus(tile, 'done')
+          updateTaskOutputDisplay(tile.id, 'Merged to main')
+          // Cleanup worktree
+          await window.shellApi.taskWorktreeRemove({ sourceDir, worktreeDir: tile.worktreePath! })
+          tile.worktreePath = undefined
+          tile.worktreeBranch = undefined
+          scheduleSave()
+        } else {
+          updateTaskOutputDisplay(tile.id, `Merge failed: ${result.error}`)
+        }
+      })
+    }
+    // Kill running agent
+    if (tile.taskStatus === 'in_progress') {
+      mk('Kill Agent', async () => {
+        await window.shellApi.taskKillAgent(tile.id)
+        updateTaskOutputDisplay(tile.id, 'Agent killed')
+      })
+    }
+    mk('Edit Prompt…', () => openTaskPromptModal(tile))
+    mk('Remove Task', () => {
+      tile.taskStatus = undefined
+      tile.taskPrompt = undefined
+      updateTileTaskVisual(tile)
+      scheduleSave()
+    })
   }
   // Phase 3-17: role assignment submenu (flat for simplicity)
   if (tile.type === 'terminal' && roles.length > 0) {
