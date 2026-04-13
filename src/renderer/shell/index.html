@@ -462,6 +462,27 @@
     #task-prompt-modal .btn-primary { background: var(--accent); color: #fff; }
     #task-prompt-modal .btn-primary:hover { opacity: 0.9; }
 
+    /* Kanban view: column headers */
+    .kanban-column-header {
+      position: absolute; top: 0; width: 100%; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; letter-spacing: 1px;
+      text-transform: uppercase; pointer-events: none;
+      border-bottom: 2px solid; padding-bottom: 4px;
+    }
+    .kanban-column-header.backlog { color: #888; border-color: #555; }
+    .kanban-column-header.in_progress { color: #6cb4ff; border-color: #4a9eff; }
+    .kanban-column-header.review { color: #f5a623; border-color: #f5a623; }
+    .kanban-column-header.done { color: #27ae60; border-color: #27ae60; }
+    .kanban-column-header .col-count {
+      background: rgba(255,255,255,0.1); padding: 1px 6px;
+      border-radius: 8px; margin-left: 6px; font-size: 10px;
+    }
+    .kanban-column-divider {
+      position: absolute; top: 0; bottom: 0; width: 1px;
+      background: rgba(255,255,255,0.06); pointer-events: none;
+    }
+
     /* Agent output line (bottom of task tiles) */
     .task-output-line {
       font-size: 10px; color: var(--text-dim); padding: 3px 8px;
@@ -535,6 +556,10 @@
         <button type="button" data-action="new-task" title="New Task" style="color:#4a9eff;">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
           <span class="tb-tooltip">New Task</span>
+        </button>
+        <button type="button" data-action="toggle-kanban" title="Kanban View">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="15" rx="1"/></svg>
+          <span class="tb-tooltip">Kanban</span>
         </button>
       </div>
       <div id="zoom-controls">

@@ -619,6 +619,12 @@ async function init(): Promise<void> {
           return
         }
 
+        // Handle kanban view toggle
+        if (action === 'toggle-kanban') {
+          toggleKanbanView()
+          return
+        }
+
         // Handle new task
         if (action === 'new-task') {
           const rect = panelViewer.getBoundingClientRect()
@@ -2302,6 +2308,127 @@ function updateTaskOutputDisplay(tileId: string, output: string): void {
     el.appendChild(outputEl)
   }
   outputEl.textContent = output
+}
+
+// ─── Kanban View Mode ─────────────────────────────────────────────────
+
+let kanbanMode = false
+const kanbanSavedPositions = new Map<string, { x: number; y: number }>()
+const kanbanElements: HTMLElement[] = []  // column headers + dividers
+
+function toggleKanbanView(): void {
+  kanbanMode = !kanbanMode
+  const btn = document.querySelector('[data-action="toggle-kanban"]') as HTMLButtonElement | null
+  if (btn) btn.classList.toggle('active', kanbanMode)
+
+  if (kanbanMode) {
+    enterKanbanView()
+  } else {
+    exitKanbanView()
+  }
+}
+
+function enterKanbanView(): void {
+  // Save current positions of task tiles
+  for (const t of tiles) {
+    if (t.taskStatus) {
+      kanbanSavedPositions.set(t.id, { x: t.x, y: t.y })
+    }
+  }
+
+  const rect = panelViewer.getBoundingClientRect()
+  const viewW = rect.width / zoom
+  const viewH = rect.height / zoom
+  const originX = -panX / zoom
+  const originY = -panY / zoom
+
+  const COLUMNS: TaskStatus[] = ['backlog', 'in_progress', 'review', 'done']
+  const COL_LABELS: Record<TaskStatus, string> = {
+    backlog: 'Backlog', in_progress: 'In Progress', review: 'Review', done: 'Done',
+  }
+  const colW = viewW / 4
+  const HEADER_H = 44
+  const TILE_GAP = 16
+  const TILE_PAD = 12
+
+  // Create column headers + dividers
+  for (let i = 0; i < 4; i++) {
+    const status = COLUMNS[i]
+
+    // Divider (except first)
+    if (i > 0) {
+      const div = document.createElement('div')
+      div.className = 'kanban-column-divider'
+      div.style.left = `${originX + colW * i}px`
+      div.style.top = `${originY}px`
+      div.style.height = `${viewH}px`
+      tileLayer.appendChild(div)
+      kanbanElements.push(div)
+    }
+
+    // Header
+    const header = document.createElement('div')
+    header.className = `kanban-column-header ${status}`
+    header.style.left = `${originX + colW * i}px`
+    header.style.top = `${originY}px`
+    header.style.width = `${colW}px`
+    const count = tiles.filter((t) => t.taskStatus === status).length
+    header.innerHTML = `${COL_LABELS[status]}<span class="col-count">${count}</span>`
+    tileLayer.appendChild(header)
+    kanbanElements.push(header)
+  }
+
+  // Arrange task tiles into columns
+  const tileW = colW - TILE_PAD * 2
+  for (let i = 0; i < 4; i++) {
+    const status = COLUMNS[i]
+    const colTiles = tiles.filter((t) => t.taskStatus === status)
+    let y = originY + HEADER_H + TILE_GAP
+    for (const t of colTiles) {
+      t.x = originX + colW * i + TILE_PAD
+      t.y = y
+      t.width = tileW
+      const el = tileElements.get(t.id)
+      if (el) {
+        el.style.transition = 'left 0.3s ease, top 0.3s ease, width 0.3s ease'
+        applyTilePosition(el, t)
+        setTimeout(() => { el.style.transition = '' }, 350)
+      }
+      y += t.height + TILE_GAP
+    }
+  }
+
+  drawConnections()
+  renderMinimap()
+}
+
+function exitKanbanView(): void {
+  // Remove column headers + dividers
+  for (const el of kanbanElements) el.remove()
+  kanbanElements.length = 0
+
+  // Restore saved positions
+  for (const t of tiles) {
+    const saved = kanbanSavedPositions.get(t.id)
+    if (saved) {
+      t.x = saved.x
+      t.y = saved.y
+      const el = tileElements.get(t.id)
+      if (el) {
+        el.style.transition = 'left 0.3s ease, top 0.3s ease, width 0.3s ease'
+        // Restore original width
+        const defaults = getDefaultSize(t.type)
+        t.width = defaults.w
+        applyTilePosition(el, t)
+        setTimeout(() => { el.style.transition = '' }, 350)
+      }
+    }
+  }
+  kanbanSavedPositions.clear()
+
+  drawConnections()
+  renderMinimap()
+  scheduleSave()
 }
 
 function setupTaskAgentListeners(): void {
