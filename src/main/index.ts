@@ -363,86 +363,47 @@ function registerShellIpc(): void {
     return { ok: true }
   })
 
-  // Kanban Phase 2: Task worktree management + agent spawning
+  // Kanban: Task management powered by cline/kanban core modules
+  const { createTaskWorktree, removeTaskWorktree, getWorktreeDiff, commitWorktree, mergeWorktreeBranch } = require('./kanban/task-worktree')
+  const { getAgentConfig, spawnAgent, getAllAgents } = require('./kanban/agent-catalog')
+
   const taskProcesses = new Map<string, import('child_process').ChildProcess>()
 
   ipcMain.handle('task:worktree-create', async (_e, opts: { sourceDir: string; taskId: string; taskName: string }) => {
-    const { execSync } = require('child_process')
-    const { mkdirSync, existsSync } = require('fs')
-    const { join } = require('path')
-    const tasksDir = join(app.getPath('home'), '.kanvas', 'tasks')
-    if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true })
-    const worktreeDir = join(tasksDir, opts.taskId)
-    const branch = `kanvas/task-${opts.taskName.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase().slice(0, 40)}-${opts.taskId.slice(-4)}`
-    try {
-      execSync(`git -C "${opts.sourceDir}" worktree add -b "${branch}" "${worktreeDir}"`, { stdio: 'pipe' })
-      return { ok: true, worktreeDir, branch }
-    } catch (err) {
-      return { ok: false, error: (err as Error).message }
-    }
+    return createTaskWorktree(opts.sourceDir, opts.taskId, opts.taskName)
   })
 
   ipcMain.handle('task:worktree-remove', async (_e, opts: { sourceDir: string; worktreeDir: string }) => {
-    const { execSync } = require('child_process')
-    try {
-      execSync(`git -C "${opts.sourceDir}" worktree remove --force "${opts.worktreeDir}"`, { stdio: 'pipe' })
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, error: (err as Error).message }
-    }
+    return removeTaskWorktree(opts.sourceDir, opts.worktreeDir)
   })
 
   ipcMain.handle('task:worktree-diff', async (_e, opts: { worktreeDir: string }) => {
-    const { execSync } = require('child_process')
-    try {
-      const diff = execSync(`git -C "${opts.worktreeDir}" diff HEAD~1 --stat`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
-      const fullDiff = execSync(`git -C "${opts.worktreeDir}" diff HEAD~1`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
-      return { ok: true, summary: diff, diff: fullDiff }
-    } catch {
-      // fallback: diff against main
-      try {
-        const diff = execSync(`git -C "${opts.worktreeDir}" diff main --stat`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
-        const fullDiff = execSync(`git -C "${opts.worktreeDir}" diff main`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
-        return { ok: true, summary: diff, diff: fullDiff }
-      } catch (err2) {
-        return { ok: false, error: (err2 as Error).message }
-      }
-    }
+    return getWorktreeDiff(opts.worktreeDir)
   })
 
   ipcMain.handle('task:worktree-commit', async (_e, opts: { worktreeDir: string; message: string }) => {
-    const { execSync } = require('child_process')
-    try {
-      execSync(`git -C "${opts.worktreeDir}" add -A`, { stdio: 'pipe' })
-      execSync(`git -C "${opts.worktreeDir}" commit -m "${opts.message.replace(/"/g, '\\"')}"`, { stdio: 'pipe' })
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, error: (err as Error).message }
-    }
+    return commitWorktree(opts.worktreeDir, opts.message)
   })
 
   ipcMain.handle('task:worktree-merge', async (_e, opts: { sourceDir: string; branch: string }) => {
-    const { execSync } = require('child_process')
-    try {
-      execSync(`git -C "${opts.sourceDir}" merge "${opts.branch}" --no-edit`, { stdio: 'pipe' })
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, error: (err as Error).message }
-    }
+    return mergeWorktreeBranch(opts.sourceDir, opts.branch)
   })
 
-  ipcMain.handle('task:spawn-agent', async (_e, opts: { worktreeDir: string; prompt: string; taskId: string }) => {
-    const { spawn } = require('child_process')
+  ipcMain.handle('task:agent-list', async () => {
+    return getAllAgents()
+  })
+
+  ipcMain.handle('task:spawn-agent', async (_e, opts: { worktreeDir: string; prompt: string; taskId: string; agentId?: string }) => {
     // Kill existing process for this task
     const existing = taskProcesses.get(opts.taskId)
     if (existing && !existing.killed) {
       existing.kill()
     }
-    const proc = spawn('claude', ['-p', opts.prompt, '--dangerously-skip-permissions'], {
-      cwd: opts.worktreeDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, KANVAS_TASK: opts.taskId },
-    })
+    const agentId = opts.agentId || 'claude'
+    const proc = spawnAgent({ agentId, worktreeDir: opts.worktreeDir, prompt: opts.prompt, autonomous: true })
+    if (!proc) {
+      return { ok: false, error: `Unknown agent: ${agentId}` }
+    }
     taskProcesses.set(opts.taskId, proc)
     proc.on('exit', (code: number | null) => {
       taskProcesses.delete(opts.taskId)
@@ -450,14 +411,13 @@ function registerShellIpc(): void {
         mainWindow.webContents.send('task:agent-exit', opts.taskId, code ?? 0)
       }
     })
-    // Stream stdout to renderer for status display
     proc.stdout?.on('data', (data: Buffer) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        const line = data.toString().trim().slice(-200) // last 200 chars
+        const line = data.toString().trim().slice(-200)
         mainWindow.webContents.send('task:agent-output', opts.taskId, line)
       }
     })
-    return { ok: true, pid: proc.pid }
+    return { ok: true, pid: proc.pid, agentId }
   })
 
   ipcMain.handle('task:kill-agent', async (_e, taskId: string) => {
