@@ -11,6 +11,10 @@ import {
 } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
+import { createTaskWorktree, removeTaskWorktree, getWorktreeDiff, commitWorktree, mergeWorktreeBranch } from './kanban/task-worktree'
+import { spawnAgent as spawnAgentProcess, getAllAgents } from './kanban/agent-catalog'
+import { createEmptyBoard, addTask as boardAddTaskFn, moveTask as boardMoveTaskFn, updateTask as boardUpdateTaskFn, deleteTask as boardDeleteTaskFn, addDependency as boardAddDepFn, removeDependency as boardRemoveDepFn, getReadyTasks as boardGetReadyFn } from './kanban/board-state'
+import type { BoardState } from './kanban/board-state'
 import { registerFsHandlers } from './ipc/fs-handlers'
 import { registerPtyHandlers, saveAllScrollback } from './ipc/pty-handlers'
 import { registerImageHandlers } from './ipc/image-handlers'
@@ -364,8 +368,6 @@ function registerShellIpc(): void {
   })
 
   // Kanban: Task management powered by cline/kanban core modules
-  const { createTaskWorktree, removeTaskWorktree, getWorktreeDiff, commitWorktree, mergeWorktreeBranch } = require('./kanban/task-worktree')
-  const { getAgentConfig, spawnAgent, getAllAgents } = require('./kanban/agent-catalog')
 
   const taskProcesses = new Map<string, import('child_process').ChildProcess>()
 
@@ -400,7 +402,7 @@ function registerShellIpc(): void {
       existing.kill()
     }
     const agentId = opts.agentId || 'claude'
-    const proc = spawnAgent({ agentId, worktreeDir: opts.worktreeDir, prompt: opts.prompt, autonomous: true })
+    const proc = spawnAgentProcess({ agentId, worktreeDir: opts.worktreeDir, prompt: opts.prompt, autonomous: true })
     if (!proc) {
       return { ok: false, error: `Unknown agent: ${agentId}` }
     }
@@ -431,16 +433,6 @@ function registerShellIpc(): void {
   })
 
   // Board state persistence — load from ~/.kanvas/board.json
-  const {
-    createEmptyBoard,
-    addTask: boardAddTask,
-    moveTask: boardMoveTask,
-    updateTask: boardUpdateTask,
-    deleteTask: boardDeleteTask,
-    addDependency: boardAddDep,
-    removeDependency: boardRemoveDep,
-    getReadyTasks: boardGetReady,
-  } = require('./kanban/board-state')
 
   const boardJsonPath = join(app.getPath('home'), '.kanvas', 'board.json')
 
@@ -470,43 +462,43 @@ function registerShellIpc(): void {
   })
 
   ipcMain.handle('board:add-task', async (_e, { title, prompt, agentId }: { title: string; prompt: string; agentId?: string }) => {
-    boardState = boardAddTask(boardState, { title, prompt, agentId: agentId ?? null })
+    boardState = boardAddTaskFn(boardState, { title, prompt, agentId: agentId ?? null })
     saveBoardState(boardState)
     return boardState
   })
 
   ipcMain.handle('board:move-task', async (_e, { taskId, toStatus }: { taskId: string; toStatus: string }) => {
-    boardState = boardMoveTask(boardState, taskId, toStatus)
+    boardState = boardMoveTaskFn(boardState, taskId, toStatus)
     saveBoardState(boardState)
     return boardState
   })
 
   ipcMain.handle('board:update-task', async (_e, { taskId, updates }: { taskId: string; updates: Record<string, unknown> }) => {
-    boardState = boardUpdateTask(boardState, taskId, updates)
+    boardState = boardUpdateTaskFn(boardState, taskId, updates)
     saveBoardState(boardState)
     return boardState
   })
 
   ipcMain.handle('board:delete-task', async (_e, { taskId }: { taskId: string }) => {
-    boardState = boardDeleteTask(boardState, taskId)
+    boardState = boardDeleteTaskFn(boardState, taskId)
     saveBoardState(boardState)
     return boardState
   })
 
   ipcMain.handle('board:add-dep', async (_e, { from, to }: { from: string; to: string }) => {
-    boardState = boardAddDep(boardState, from, to)
+    boardState = boardAddDepFn(boardState, from, to)
     saveBoardState(boardState)
     return boardState
   })
 
   ipcMain.handle('board:remove-dep', async (_e, { from, to }: { from: string; to: string }) => {
-    boardState = boardRemoveDep(boardState, from, to)
+    boardState = boardRemoveDepFn(boardState, from, to)
     saveBoardState(boardState)
     return boardState
   })
 
   ipcMain.handle('board:ready-tasks', async () => {
-    return boardGetReady(boardState)
+    return boardGetReadyFn(boardState)
   })
 
   // Phase 4-24: kanvas CLI — Unix domain socket JSON RPC
