@@ -69,7 +69,7 @@ declare global {
         Promise<{ ok: boolean; error?: string }>
       taskWorktreeMerge: (opts: { sourceDir: string; branch: string }) =>
         Promise<{ ok: boolean; error?: string }>
-      taskSpawnAgent: (opts: { worktreeDir: string; prompt: string; taskId: string }) =>
+      taskSpawnAgent: (opts: { worktreeDir: string; prompt: string; taskId: string; agentId?: string }) =>
         Promise<{ ok: boolean; pid?: number; error?: string }>
       taskKillAgent: (taskId: string) => Promise<{ ok: boolean; error?: string }>
       onTaskAgentExit: (cb: (taskId: string, exitCode: number) => void) => () => void
@@ -104,6 +104,7 @@ interface Tile {
   // Kanban: task management fields
   taskStatus?: TaskStatus
   taskPrompt?: string
+  taskAgentId?: string      // Selected agent (claude, codex, cline, etc.)
   worktreePath?: string
   worktreeBranch?: string
 }
@@ -1509,7 +1510,7 @@ async function handleCliMethod(method: string, params: Record<string, unknown>):
         .map((t) => ({
           id: t.id, name: tileLabel(t), type: t.type,
           taskStatus: t.taskStatus, taskPrompt: t.taskPrompt,
-          worktreeBranch: t.worktreeBranch,
+          agentId: t.taskAgentId ?? 'claude', worktreeBranch: t.worktreeBranch,
         }))
     case 'task.create': {
       const type = (params.type as Tile['type']) ?? 'terminal'
@@ -2269,6 +2270,7 @@ async function startTaskExecution(tile: Tile): Promise<void> {
       worktreeDir: sourceDir,
       prompt: tile.taskPrompt,
       taskId: tile.id,
+      agentId: tile.taskAgentId,
     })
     if (agentResult.ok) {
       updateTaskOutputDisplay(tile.id, 'Agent started (no worktree)')
@@ -2280,11 +2282,12 @@ async function startTaskExecution(tile: Tile): Promise<void> {
   tile.worktreeBranch = result.branch
   scheduleSave()
 
-  // Spawn Claude Code agent in worktree
+  // Spawn agent in worktree
   const agentResult = await window.shellApi.taskSpawnAgent({
     worktreeDir: result.worktreeDir!,
     prompt: tile.taskPrompt,
     taskId: tile.id,
+    agentId: tile.taskAgentId,
   })
 
   if (agentResult.ok) {
@@ -2487,11 +2490,13 @@ let taskPromptResolve: ((value: { prompt: string } | null) => void) | null = nul
 function openTaskPromptModal(tile: Tile): void {
   const modal = document.getElementById('task-prompt-modal')!
   const input = document.getElementById('task-prompt-input') as HTMLTextAreaElement
+  const agentSelect = document.getElementById('task-agent-select') as HTMLSelectElement
   const title = document.getElementById('task-prompt-title') as HTMLHeadingElement
   const okBtn = document.getElementById('task-prompt-ok') as HTMLButtonElement
 
   title.textContent = tile.taskStatus ? 'Edit Task Prompt' : 'Create Task'
   okBtn.textContent = tile.taskStatus ? 'Update' : 'Create Task'
+  agentSelect.value = tile.taskAgentId ?? 'claude'
   input.value = tile.taskPrompt ?? ''
   modal.classList.add('open')
   input.focus()
@@ -2506,6 +2511,7 @@ function openTaskPromptModal(tile: Tile): void {
     const prompt = input.value.trim()
     if (!prompt) { input.focus(); return }
     tile.taskPrompt = prompt
+    tile.taskAgentId = agentSelect.value
     if (!tile.taskStatus) {
       tile.taskStatus = 'backlog'
     }

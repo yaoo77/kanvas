@@ -183,7 +183,7 @@ contextBridge.exposeInMainWorld('shellApi', {
     ipcRenderer.invoke('task:worktree-commit', opts),
   taskWorktreeMerge: (opts: { sourceDir: string; branch: string }) =>
     ipcRenderer.invoke('task:worktree-merge', opts),
-  taskSpawnAgent: (opts: { worktreeDir: string; prompt: string; taskId: string }) =>
+  taskSpawnAgent: (opts: { worktreeDir: string; prompt: string; taskId: string; agentId?: string }) =>
     ipcRenderer.invoke('task:spawn-agent', opts),
   taskKillAgent: (taskId: string) =>
     ipcRenderer.invoke('task:kill-agent', taskId),
@@ -197,4 +197,21 @@ contextBridge.exposeInMainWorld('shellApi', {
     ipcRenderer.on('task:agent-output', handler)
     return () => ipcRenderer.removeListener('task:agent-output', handler)
   },
+  taskAgentList: () => ipcRenderer.invoke('task:agent-list'),
+
+  // Board state
+  boardGet: () => ipcRenderer.invoke('board:get'),
+  boardAddTask: (opts: { title: string; prompt: string; agentId?: string }) =>
+    ipcRenderer.invoke('board:add-task', opts),
+  boardMoveTask: (opts: { taskId: string; toStatus: string }) =>
+    ipcRenderer.invoke('board:move-task', opts),
+  boardUpdateTask: (opts: { taskId: string; updates: Record<string, unknown> }) =>
+    ipcRenderer.invoke('board:update-task', opts),
+  boardDeleteTask: (opts: { taskId: string }) =>
+    ipcRenderer.invoke('board:delete-task', opts),
+  boardAddDep: (opts: { from: string; to: string }) =>
+    ipcRenderer.invoke('board:add-dep', opts),
+  boardRemoveDep: (opts: { from: string; to: string }) =>
+    ipcRenderer.invoke('board:remove-dep', opts),
+  boardReadyTasks: () => ipcRenderer.invoke('board:ready-tasks'),
 })

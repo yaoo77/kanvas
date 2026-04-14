@@ -430,6 +430,85 @@ function registerShellIpc(): void {
     return { ok: false, error: 'no running process' }
   })
 
+  // Board state persistence — load from ~/.kanvas/board.json
+  const {
+    createEmptyBoard,
+    addTask: boardAddTask,
+    moveTask: boardMoveTask,
+    updateTask: boardUpdateTask,
+    deleteTask: boardDeleteTask,
+    addDependency: boardAddDep,
+    removeDependency: boardRemoveDep,
+    getReadyTasks: boardGetReady,
+  } = require('./kanban/board-state')
+
+  const boardJsonPath = join(app.getPath('home'), '.kanvas', 'board.json')
+
+  function loadBoardState(): ReturnType<typeof createEmptyBoard> {
+    const { readFileSync, existsSync } = require('fs')
+    if (existsSync(boardJsonPath)) {
+      try {
+        return JSON.parse(readFileSync(boardJsonPath, 'utf-8'))
+      } catch {
+        return createEmptyBoard()
+      }
+    }
+    return createEmptyBoard()
+  }
+
+  function saveBoardState(state: ReturnType<typeof createEmptyBoard>): void {
+    const { writeFileSync, mkdirSync } = require('fs')
+    const { dirname } = require('path')
+    mkdirSync(dirname(boardJsonPath), { recursive: true })
+    writeFileSync(boardJsonPath, JSON.stringify(state, null, 2))
+  }
+
+  let boardState = loadBoardState()
+
+  ipcMain.handle('board:get', async () => {
+    return boardState
+  })
+
+  ipcMain.handle('board:add-task', async (_e, { title, prompt, agentId }: { title: string; prompt: string; agentId?: string }) => {
+    boardState = boardAddTask(boardState, { title, prompt, agentId: agentId ?? null })
+    saveBoardState(boardState)
+    return boardState
+  })
+
+  ipcMain.handle('board:move-task', async (_e, { taskId, toStatus }: { taskId: string; toStatus: string }) => {
+    boardState = boardMoveTask(boardState, taskId, toStatus)
+    saveBoardState(boardState)
+    return boardState
+  })
+
+  ipcMain.handle('board:update-task', async (_e, { taskId, updates }: { taskId: string; updates: Record<string, unknown> }) => {
+    boardState = boardUpdateTask(boardState, taskId, updates)
+    saveBoardState(boardState)
+    return boardState
+  })
+
+  ipcMain.handle('board:delete-task', async (_e, { taskId }: { taskId: string }) => {
+    boardState = boardDeleteTask(boardState, taskId)
+    saveBoardState(boardState)
+    return boardState
+  })
+
+  ipcMain.handle('board:add-dep', async (_e, { from, to }: { from: string; to: string }) => {
+    boardState = boardAddDep(boardState, from, to)
+    saveBoardState(boardState)
+    return boardState
+  })
+
+  ipcMain.handle('board:remove-dep', async (_e, { from, to }: { from: string; to: string }) => {
+    boardState = boardRemoveDep(boardState, from, to)
+    saveBoardState(boardState)
+    return boardState
+  })
+
+  ipcMain.handle('board:ready-tasks', async () => {
+    return boardGetReady(boardState)
+  })
+
   // Phase 4-24: kanvas CLI — Unix domain socket JSON RPC
   setupKanvasCliServer()
 }
